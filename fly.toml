@@ -1,0 +1,29 @@
+# fly.io — always-on pretend helper + phone access
+# https://fly.io/docs/hands-on/install-flyctl/
+
+app = 'companyresearch-desk'
+primary_region = 'lhr'
+
+[build]
+
+[env]
+  HOST = '0.0.0.0'
+  PORT = '8080'
+  COMPANYRESEARCH_DATA = '/data'
+  # Set ACCESS_CODE with: fly secrets set ACCESS_CODE=your-private-code
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'off'
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  memory = '512mb'
+  cpu_kind = 'shared'
+  cpus = 1
+
+[mounts]
+  source = 'cr_data'
+  destination = '/data'

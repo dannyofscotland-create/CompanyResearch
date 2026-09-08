@@ -1,0 +1,16 @@
+.venv/
+venv/
+.git/
+.cache/
+__pycache__/
+*.pyc
+.env
+.env.*
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+paper_wallet.json
+fly_access_code.txt
+deploy-fly.ps1

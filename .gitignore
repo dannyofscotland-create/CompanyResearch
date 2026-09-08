@@ -1,0 +1,12 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.cache/
+paper_wallet.json
+.env
+dist/
+build/
+.pytest_cache/
+.mypy_cache/

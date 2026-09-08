@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>Company Research</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="frame">
+    <header class="top">
+      <div>
+        <p class="eyebrow">Pretend investor — cannot touch pensions or real money</p>
+        <h1>Practice with fake pounds</h1>
+      </div>
+      <p class="pledge">This app has <em>no</em> way to reach pensions, a bank, or a broker. You get £500 of pretend cash. You can click, or let the helper buy and sell fake pounds using simple rules — not a crystal ball.</p>
+    </header>
+
+    <form class="search" id="form">
+      <label class="sr" for="q">Ticker or company</label>
+      <input id="q" name="q" autocomplete="off" placeholder="Type a company you have heard of — Apple, Tesla, Costco" />
+      <button type="submit" id="go">Explain this</button>
+    </form>
+    <div class="chips" id="chips">
+      <button type="button" data-q="AAPL">AAPL</button>
+      <button type="button" data-q="COST">COST</button>
+      <button type="button" data-q="IONQ">IONQ</button>
+      <button type="button" data-q="MARA">MARA</button>
+      <button type="button" data-q="DJT">DJT</button>
+    </div>
+
+    <section class="boards" id="boards">
+      <article class="board board-quality">
+        <header>
+          <h2>Steadier on paper</h2>
+          <p>These businesses already make profits. They are big, so £10 will not 10× in a week — but you can still buy a slice, and add more later. That is how retirement pots are usually built.</p>
+        </header>
+        <ol id="board-quality"><li class="loading">Scoring the watchlist…</li></ol>
+      </article>
+      <article class="board board-spec">
+        <header>
+          <h2>Bigger gamble</h2>
+          <p>Jumpy companies that could still grow a lot — or shrink a lot. Not as tiny as the long shots.</p>
+        </header>
+        <ol id="board-spec"><li class="loading">Scoring the watchlist…</li></ol>
+      </article>
+      <article class="board board-longshot">
+        <header>
+          <h2>Long shots</h2>
+          <p>Early bitcoin was tiny. These are the £10 lottery tickets: crypto-linked, space, quantum, nuclear, early science. Most will fail. A few could pay a lot.</p>
+        </header>
+        <ol id="board-longshot"><li class="loading">Scoring the watchlist…</li></ol>
+      </article>
+      <article class="board board-bear">
+        <header>
+          <h2>What shorts pick on</h2>
+          <p>Shorting (borrow shares, sell, hope the price falls) is usually <em>legal</em>. Spreading lies to crash a share is not. These names have the shape critics hunt — losses, cash burn, crowded shorts. Not a short list. This app cannot short. A squeeze can wreck the shorts too.</p>
+        </header>
+        <ol id="board-bear"><li class="loading">Scoring the watchlist…</li></ol>
+      </article>
+      <article class="board board-endorsement">
+        <header>
+          <h2>Endorsement lottery</h2>
+          <p>Trump-linked names and celebrity pumps can spike overnight. The screenshots of people getting rich are the winners. Plenty buy the top. The pretend helper may put a <em>tiny</em> fake slice in so you can watch the scoreboard. That is not a reason to give it cash. This app cannot take real money.</p>
+        </header>
+        <ol id="board-endorsement"><li class="loading">Scoring the watchlist…</li></ol>
+      </article>
+    </section>
+    <section class="wallet" id="wallet">
+      <p class="wallet-lock">Pretend test — not going live. This app cannot take cash.</p>
+      <p class="helper-note" id="helper-note"></p>
+      <dl>
+        <div><dt>Pretend cash</dt><dd id="w-cash">—</dd></div>
+        <div><dt>Holdings</dt><dd id="w-hold">—</dd></div>
+        <div><dt>Total</dt><dd id="w-total">—</dd></div>
+        <div><dt>Up / down</dt><dd id="w-pnl">—</dd></div>
+      </dl>
+      <button type="button" id="w-reset">Start again with £500 pretend</button>
+      <div class="auto">
+        <button type="button" id="w-auto">Let the helper move pretend money</button>
+        <label class="watch"><input type="checkbox" id="w-watch" /> Keep watching on this machine (every 10 minutes — browser can close)</label>
+        <p class="watch-status" id="watch-status"></p>
+        <p class="auto-rules">Most pretend cash goes into steadier businesses after research. About a quarter is kept for tiny risk tickets (endorsement, long shot, short-hunted). Wikipedia/forums do not count as a crash. Tick keep watching on the phone for a few days. Still not going live.</p>
+        <ol id="auto-log"></ol>
+      </div>
+      <ul class="hold-list" id="hold-list"></ul>
+    </section>
+    <p class="board-note" id="board-note"></p>
+
+    <section class="status" id="status" hidden>
+      <ol id="steps"></ol>
+    </section>
+
+    <p class="banner" id="error" hidden></p>
+
+    <main class="desk" id="desk" hidden>
+      <article class="paper">
+        <div class="guide" id="guide">
+          <p class="kind-tag" id="kindTag"></p>
+          <h2 id="headline"></h2>
+          <p class="one-liner" id="oneLiner"></p>
+          <p class="blurb" id="blurb"></p>
+          <div class="money">
+            <p class="slice" id="sliceNote"></p>
+            <div class="paper-buy">
+              <p class="money-label">Use pretend money
+                <span class="money-fields">
+                  £<input id="paperBuyAmt" type="number" min="1" step="1" value="10" />
+                  <button type="button" id="paperBuy">Put this in (fake)</button>
+                </span>
+              </p>
+              <p class="paper-buy-msg" id="paperBuyMsg"></p>
+            </div>
+            <p class="money-label">If I put
+              <span class="money-fields">
+                £<input id="pounds" type="number" min="1" step="1" value="10" />
+                in once, for
+                <select id="years">
+                  <option value="1">1 year</option>
+                  <option value="5" selected>5 years</option>
+                  <option value="10">10 years</option>
+                </select>
+              </span>
+            </p>
+            <div class="paths">
+              <div>
+                <span>If things go badly</span>
+                <strong id="path-tough">—</strong>
+              </div>
+              <div class="mid">
+                <span>In between</span>
+                <strong id="path-middle">—</strong>
+              </div>
+              <div>
+                <span>If things go well</span>
+                <strong id="path-lucky">—</strong>
+              </div>
+            </div>
+            <p class="hist" id="hist"></p>
+            <p class="hist" id="shortNote"></p>
+            <div class="drip">
+              <p class="money-label">For retirement I can add
+                <span class="money-fields">
+                  £<input id="dripPounds" type="number" min="1" step="1" value="10" />
+                  a
+                  <select id="dripEvery">
+                    <option value="52" selected>week</option>
+                    <option value="12">month</option>
+                  </select>
+                  for
+                  <select id="dripYears">
+                    <option value="10">10 years</option>
+                    <option value="20" selected>20 years</option>
+                    <option value="30">30 years</option>
+                    <option value="40">40 years</option>
+                  </select>
+                </span>
+              </p>
+              <p class="drip-put">Money I would have put in: <strong id="dripIn">—</strong></p>
+              <div class="paths drip-paths">
+                <div>
+                  <span>Quiet / rough</span>
+                  <strong id="drip-tough">—</strong>
+                </div>
+                <div class="mid">
+                  <span>Quiet / in between</span>
+                  <strong id="drip-middle">—</strong>
+                </div>
+                <div>
+                  <span>Quiet / better</span>
+                  <strong id="drip-lucky">—</strong>
+                </div>
+              </div>
+              <p class="myth">The “£60 doubled in a week” posts are the winners. If it can double in a week it can also drop in a week. Retirement is the other game: add a bit, often, for years, usually in a mix of companies — not one long shot.</p>
+            </div>
+            <p class="warn" id="guideWarn"></p>
+          </div>
+        </div>
+        <div class="paper-meta">
+          <div>
+            <p class="kicker" id="asOf"></p>
+            <p class="engine" id="engine"></p>
+          </div>
+          <div class="stamp" id="stamp">
+            <span id="stampLabel"></span>
+            <strong id="stampScore"></strong>
+          </div>
+        </div>
+        <div class="memo" id="memo"></div>
+      </article>
+      <aside class="rail">
+        <section>
+          <h2>What I chased</h2>
+          <p class="hint">Questions a person would ask after the company page — rivals, trouble, crash campaigns, political pumps.</p>
+          <ul class="src" id="chased"></ul>
+        </section>
+        <section>
+          <h2>The basics</h2>
+          <dl id="snap"></dl>
+        </section>
+        <section>
+          <h2>Official filings</h2>
+          <p class="hint">Paperwork the company had to file. Trust this more than tweets.</p>
+          <ul class="src" id="src-primary"></ul>
+        </section>
+        <section>
+          <h2>Real reporting</h2>
+          <p class="hint">News that is not just the same press release copied around.</p>
+          <ul class="src" id="src-secondary"></ul>
+        </section>
+        <section>
+          <h2>Gossip and copies</h2>
+          <p class="hint">Social posts, or the same headline reprinted.</p>
+          <ul class="src" id="src-noise"></ul>
+        </section>
+        <section>
+          <h2>Who already has shares</h2>
+          <div id="owners"></div>
+        </section>
+      </aside>
+    </main>
+
+    <section class="empty" id="empty">
+      <p>Look a company up, then put pretend £10 or £60 in. Watch the fake wallet. Nothing here can reach a pension or a real account.</p>
+    </section>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
