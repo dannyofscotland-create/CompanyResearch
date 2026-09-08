@@ -16,17 +16,16 @@ from companyresearch.screens import (
 from companyresearch.sources.market import fetch_snapshot, normalize_ticker
 from companyresearch.sources.news import search_angle
 
-PLAN_SYS = """You are a careful person with a pretend wallet. Research first, then decide.
-Use most of the fake cash on steadier businesses that already make money.
-Also take a FEW tiny risks: one endorsement/Trump-shaped name, one long shot, and/or one short-hunted name if those files look ok.
-Do not put most of the pile in one lottery. Do not fill the whole wallet with only Apple-style names and leave no risk tickets.
+PLAN_SYS = """You run a pretend wallet in a free test. Research each name, then decide freely.
+Goal of the test: see if your choices make or lose fake money — not to stay "safe".
+If after research you like a stock (any kind: steadier, gamble, long shot, endorsement, short-hunted), BUY it.
+Size by conviction: large if you really like it, medium if ok, small if a flyer.
+You may put a big slice in one name if the file backs it. Leave only crumbs idle when cash is sitting around.
+SELL whenever research says the story broke, the thesis failed, a better use of cash exists, attack_level is confirmed, or you want to lock in / cut a loss.
+Hold only when nothing important changed and you still want the name.
+Skip a buy only if the file is thin, numbers look broken, or attack_level is confirmed.
 Do NOT sell or skip because of Wikipedia, forums, video-game pages, or a headline that is not about this ticker.
 A dismissed lawsuit is not a crash. Short interest alone is not a sell.
-Only treat attack_level "confirmed" as a real crash campaign (a named short report or two proper news sources about THIS company).
-"watch" means keep an eye on it, not dump.
-Sell if the business story broke, attack_level is confirmed, or a jumpy name already doubled.
-Hold if nothing important changed.
-Skip a buy only if the file is thin or attack_level is confirmed.
 Return ONLY JSON:
 {"moves":[{"ticker":"X","action":"buy"|"sell"|"hold"|"skip","why":"plain words as if talking","size":"small"|"medium"|"large"}]}
 This is pretend. Never tell anyone to hand over real cash.
@@ -121,29 +120,10 @@ def heuristic_move(file: dict[str, Any], *, mode: str, pnl: float | None = None)
     kind = file.get("kind") or "mixed"
     ugly = file.get("attack_level") == "confirmed"
     quality = int(file.get("quality") or 0)
+    headlines = [str(h) for h in (file.get("headlines") or []) if h][:3]
+    bits = ", ".join(headlines) if headlines else "thin headlines"
     if mode == "review":
         drop = pnl if pnl is not None else 0.0
-        if jumpy_kind(kind) and drop <= -0.25:
-            return {
-                "ticker": ticker,
-                "action": "sell",
-                "size": "all",
-                "why": f"Looked again at {ticker}: jumpy and the pretend stake is down about {abs(drop)*100:.0f}%. Selling.",
-            }
-        if kind == "steadier" and drop <= -0.35:
-            return {
-                "ticker": ticker,
-                "action": "sell",
-                "size": "all",
-                "why": f"Looked again at {ticker}: even a steadier name should not be down ~{abs(drop)*100:.0f}% without a think. Selling.",
-            }
-        if jumpy_kind(kind) and drop >= 1.0:
-            return {
-                "ticker": ticker,
-                "action": "sell",
-                "size": "all",
-                "why": f"{ticker} roughly doubled on pretend money. Taking the fake chips off the table.",
-            }
         if ugly:
             hit = file.get("crash_headline") or "a confirmed report about this company"
             return {
@@ -152,15 +132,34 @@ def heuristic_move(file: dict[str, Any], *, mode: str, pnl: float | None = None)
                 "size": "all",
                 "why": f"Second look on {ticker}: confirmed trouble about this ticker ({hit}). Selling pretend.",
             }
-        watch = file.get("attack_level") == "watch"
-        extra = " One proper headline looks ugly, so watching — not dumping." if watch else ""
+        if drop <= -0.18:
+            return {
+                "ticker": ticker,
+                "action": "sell",
+                "size": "all",
+                "why": f"Looked again at {ticker}: pretend stake down about {abs(drop)*100:.0f}%. Cutting the loss for the test.",
+            }
+        if drop >= 0.45:
+            return {
+                "ticker": ticker,
+                "action": "sell",
+                "size": "all",
+                "why": f"{ticker} is up about {drop*100:.0f}% on pretend money. Banking some of the test win.",
+            }
+        if file.get("attack_level") == "watch" and drop < 0:
+            return {
+                "ticker": ticker,
+                "action": "sell",
+                "size": "all",
+                "why": f"Looked at {ticker} again: ugly proper headline and already underwater. Selling for the test.",
+            }
         return {
             "ticker": ticker,
             "action": "hold",
             "size": "all",
-            "why": f"Looked at {ticker} again. No confirmed crash campaign. Holding pretend.{extra}",
+            "why": f"Looked at {ticker} again. Still want it on the file ({bits}). Holding pretend.",
         }
-    # buy
+    # buy — free test: if research likes it, take it
     if ugly:
         return {
             "ticker": ticker,
@@ -168,47 +167,33 @@ def heuristic_move(file: dict[str, Any], *, mode: str, pnl: float | None = None)
             "size": "small",
             "why": f"Looked at {ticker}. Confirmed trouble about this company, not a forum post. Not putting fake money in.",
         }
-    if kind == "steadier" and quality >= 56:
+    if quality < 38 and kind in {"mixed", "gamble"} and not jumpy_kind(kind):
         return {
             "ticker": ticker,
-            "action": "buy",
-            "size": "large",
-            "why": f"Looked at {ticker}: already makes money on the public numbers. That looks good enough for pretend. Investing.",
-        }
-    if kind == "endorsement":
-        return {
-            "ticker": ticker,
-            "action": "buy",
+            "action": "skip",
             "size": "small",
-            "why": f"Looked at {ticker}: endorsement lottery. Tiny pretend slice so we can watch — not a plan.",
+            "why": f"Looked at {ticker}. File is too thin or messy. Skipping.",
         }
-    if kind == "bear":
+    if kind == "steadier" and quality >= 52:
+        size = "large"
+        why = f"Looked at {ticker}: already makes money on the public numbers. Buying for the test."
+    elif jumpy_kind(kind):
+        size = "medium" if quality >= 40 else "small"
+        why = (
+            f"Looked at {ticker} ({kind}). Research file is interesting enough for a real pretend bet "
+            f"({bits}). Buying — win or lose is the point of this test."
+        )
+    elif quality >= 45:
+        size = "large" if quality >= 58 else "medium"
+        why = f"Looked at {ticker}: research looks ok ({bits}). Putting pretend money in."
+    else:
         return {
             "ticker": ticker,
-            "action": "buy",
+            "action": "skip",
             "size": "small",
-            "why": f"Looked at {ticker}: shorts pick on this shape. Tiny pretend slice. Will sell only if a confirmed report about this company shows up.",
+            "why": f"Looked at {ticker}. Not convinced after research. Skipping.",
         }
-    if kind == "longshot" and quality < 56:
-        return {
-            "ticker": ticker,
-            "action": "buy",
-            "size": "small",
-            "why": f"Looked at {ticker}: long-shot shape. Tiny pretend lottery ticket. Most of these fail.",
-        }
-    if quality >= 48:
-        return {
-            "ticker": ticker,
-            "action": "buy",
-            "size": "medium",
-            "why": f"Looked at {ticker}: not a piggy bank, not nothing. Putting some pretend money in.",
-        }
-    return {
-        "ticker": ticker,
-        "action": "skip",
-        "size": "small",
-        "why": f"Looked at {ticker}. File is too thin or messy. Skipping.",
-    }
+    return {"ticker": ticker, "action": "buy", "size": size, "why": why}
 
 
 def plan_pass(
@@ -246,7 +231,7 @@ def plan_pass(
         file["mode"] = "buy"
         files.append(file)
         seen.add(ticker)
-        if sum(1 for f in files if f.get("mode") == "buy") >= 6:
+        if sum(1 for f in files if f.get("mode") == "buy") >= 10:
             break
 
     planned = _llm_plan(files, cash, total)
@@ -261,7 +246,7 @@ def plan_pass(
 
 
 def _calm_moves(moves: list[dict[str, Any]], files: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Do not let a twitchy language model dump Coca-Cola because Wikipedia said ‘pump and dump’."""
+    """Block junk-source panic sells only. Do not override research skips or free test sells."""
     by = {str(f.get("ticker") or "").upper(): f for f in files}
     out = []
     for move in moves:
@@ -269,23 +254,14 @@ def _calm_moves(moves: list[dict[str, Any]], files: list[dict[str, Any]]) -> lis
         file = by.get(ticker) or {}
         level = file.get("attack_level") or "clear"
         action = move.get("action")
-        if action == "sell" and file.get("mode") == "review" and level != "confirmed":
-            drop = float(file.get("pnl") or 0)
-            kind = file.get("kind") or "mixed"
-            if not (jumpy_kind(kind) and (drop <= -0.25 or drop >= 1.0)) and not (
-                kind == "steadier" and drop <= -0.35
-            ):
-                move = {
-                    **move,
-                    "action": "hold",
-                    "why": (
-                        move.get("why")
-                        or "Wanted to sell, but the scare was not a confirmed story about this company."
-                    )
-                    + " Holding. Wikipedia/forums do not count.",
-                }
-        if action == "skip" and file.get("mode") == "buy" and level != "confirmed":
-            move = heuristic_move(file, mode="buy", pnl=file.get("pnl"))
+        why = str(move.get("why") or "").lower()
+        junk_scare = any(w in why for w in ("wikipedia", "forum", "reddit", "wiki", "video game", "fandom"))
+        if action == "sell" and file.get("mode") == "review" and level == "clear" and junk_scare:
+            move = {
+                **move,
+                "action": "hold",
+                "why": "Wanted to sell on a junk page. Wikipedia/forums do not count. Holding.",
+            }
         out.append(move)
     return out
 
@@ -312,7 +288,7 @@ def _llm_plan(files: list[dict[str, Any]], cash: float, total: float) -> list[di
     payload = {
         "cash_gbp": round(cash, 2),
         "total_gbp": round(total, 2),
-        "note": "Use the fake cash. Leave only crumbs idle. Split across names.",
+        "note": "Free test: buy what research likes, sell when you change your mind. Leave only crumbs idle.",
         "desk": slim,
     }
     try:

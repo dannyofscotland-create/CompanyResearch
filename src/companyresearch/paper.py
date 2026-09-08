@@ -6,7 +6,7 @@ from typing import Any
 
 from companyresearch import cache
 from companyresearch.config import settings
-from companyresearch.desk import jumpy_kind, kind_of, plan_pass
+from companyresearch.desk import assemble_file, heuristic_move, kind_of, plan_pass
 from companyresearch.net import yfinance_ticker
 from companyresearch.screens import run_screens
 from companyresearch.sources.market import fetch_snapshot, normalize_ticker
@@ -14,9 +14,7 @@ from companyresearch.sources.market import fetch_snapshot, normalize_ticker
 WALLET_PATH = settings.data_dir / "paper_wallet.json"
 STARTING_GBP = 500.0
 MIN_CASH = 2.0
-MAX_HOLDINGS = 8
-# Keep a pocket for tiny lottery / endorsement / short-hunted slices so steadier names cannot eat the whole pile.
-RISK_POCKET_FRAC = 0.24
+MAX_HOLDINGS = 12
 NOTE = (
     "Pretend money on this PC only. This app cannot see or touch pensions, "
     "banks, brokers, or any real account. A few days of fake pounds is not going live."
@@ -253,34 +251,26 @@ def sell(ticker: str, reason: str | None = None) -> dict[str, Any]:
 
 
 def _stake_amount(size: str, kind: str, cash: float, total: float, *, keep: float = 0.0) -> float:
-    """Size a pretend buy. `keep` is cash reserved for later risk tickets."""
+    """Size a pretend buy from research conviction. `keep` is unused in free-test mode."""
     if cash < 10:
         return 0.0
     spendable = max(0.0, cash - max(0.0, keep))
     if spendable < 10:
         return 0.0
-    jumpy = jumpy_kind(kind)
-    cap = max(10.0, total * (0.14 if jumpy else 0.28))
+    # Free test: let research size the bet — large can be a real chunk of the pile.
     if size == "small":
-        want = min(cap, max(10.0, total * 0.08), 40.0)
+        want = min(max(10.0, total * 0.10), 60.0, spendable)
     elif size == "large":
-        want = min(cap, max(10.0, total * 0.24))
+        want = min(max(10.0, total * 0.40), spendable)
     else:
-        want = min(cap, max(10.0, total * 0.16))
-    want = min(want, spendable)
-    if want < 10:
-        return 0.0
+        want = min(max(10.0, total * 0.22), spendable)
     leftover = cash - want
-    # Only vacuum crumbs into a steadier name when nothing is reserved for risk.
-    if keep <= 0 and leftover < 10 and leftover >= 0 and not jumpy:
-        want = cash
-    if cash - want < MIN_CASH and cash - want > 0 and keep <= 0 and not jumpy:
+    if leftover < MIN_CASH and leftover >= 0:
         want = cash
     return round(want, 2)
 
 
 def _candidates(boards: dict[str, Any], held: set[str]) -> list[str]:
-    # Risk tickets first so a pile of Apple-style names cannot spend the cash before them.
     order = ("endorsement", "longshot", "bear", "quality", "speculative")
     out: list[str] = []
     seen: set[str] = set(held)
@@ -294,23 +284,8 @@ def _candidates(boards: dict[str, Any], held: set[str]) -> list[str]:
     return out
 
 
-def _risk_kinds_held(holdings: list[dict[str, Any]]) -> set[str]:
-    return {str(h.get("kind") or "") for h in holdings if jumpy_kind(str(h.get("kind") or ""))}
-
-
-def _risk_pocket_needed(holdings: list[dict[str, Any]], total: float) -> float:
-    held = _risk_kinds_held(holdings)
-    missing = 0
-    for kind in ("endorsement", "longshot", "bear"):
-        if kind not in held:
-            missing += 1
-    if missing <= 0:
-        return 0.0
-    return round(max(30.0, total * RISK_POCKET_FRAC), 2)
-
-
 def autopilot() -> dict[str, Any]:
-    """Research, then buy/sell pretend money. Mostly steadier, with a reserved risk pocket. Never real accounts."""
+    """Research, then freely buy/sell pretend money for the test. Never real accounts."""
     log: list[dict[str, Any]] = []
     marked = snapshot()
     boards = run_screens()
@@ -337,15 +312,14 @@ def autopilot() -> dict[str, Any]:
     raw = load_wallet().get("holdings") or []
     held = {h.get("ticker") for h in raw if h.get("ticker")}
     now_of = {h.get("ticker"): float(h.get("now_gbp") or 0) for h in marked.get("holdings") or []}
-    pocket = _risk_pocket_needed(raw, total)
 
     buy_moves = [m for m in moves if m.get("action") == "buy"]
     other_moves = [m for m in moves if m.get("action") in {"hold", "skip"}]
     for move in other_moves:
         log.append({"action": move.get("action"), "ticker": move.get("ticker") or "", "why": move.get("why") or ""})
 
-    def _try_buy(move: dict[str, Any], *, keep: float) -> None:
-        nonlocal cash, held, now_of, pocket, raw
+    def _try_buy(move: dict[str, Any]) -> None:
+        nonlocal cash, held, now_of
         ticker = move.get("ticker")
         why = move.get("why") or ""
         if not ticker:
@@ -354,27 +328,15 @@ def autopilot() -> dict[str, Any]:
             log.append({"action": "skip", "ticker": ticker, "why": "Wanted to buy but pretend cash is gone this pass."})
             return
         if ticker not in held and len(held) >= MAX_HOLDINGS:
-            log.append({"action": "skip", "ticker": ticker, "why": "Already have enough names. A person would not own the whole board."})
+            log.append({"action": "skip", "ticker": ticker, "why": "Wallet full — sell something first if you want this name."})
             return
         try:
             kind, _ = classify_ticker(ticker)
         except Exception:
             kind = "mixed"
-        already = now_of.get(ticker, 0.0)
-        cap = total * (0.14 if jumpy_kind(kind) else 0.28)
-        room = max(0.0, cap - already)
-        pool = min(cash, room) if ticker in held else cash
-        amount = _stake_amount(str(move.get("size") or "medium"), kind, pool, total, keep=keep)
-        if ticker in held:
-            amount = min(amount, room)
+        amount = _stake_amount(str(move.get("size") or "medium"), kind, cash, total, keep=0.0)
         if amount < 10:
-            log.append(
-                {
-                    "action": "skip",
-                    "ticker": ticker,
-                    "why": f"Looked at {ticker} but left cash for risk tickets / size limits.",
-                }
-            )
+            log.append({"action": "skip", "ticker": ticker, "why": f"Liked {ticker} but not enough pretend cash left to size a bet."})
             return
         try:
             buy(ticker, amount, kind=kind, reason=why)
@@ -382,111 +344,41 @@ def autopilot() -> dict[str, Any]:
             held.add(ticker)
             cash -= amount
             now_of[ticker] = now_of.get(ticker, 0.0) + amount
-            raw = load_wallet().get("holdings") or []
-            pocket = _risk_pocket_needed(raw, total)
         except ValueError as exc:
             log.append({"action": "skip", "ticker": ticker, "why": str(exc)})
 
-    # Risk tickets first while the pocket is reserved.
     for move in buy_moves:
-        ticker = move.get("ticker")
-        try:
-            kind, _ = classify_ticker(ticker) if ticker else ("mixed", None)
-        except Exception:
-            kind = "mixed"
-        if jumpy_kind(kind):
-            _try_buy(move, keep=0.0)
+        _try_buy(move)
 
-    # Then steadier names, keeping the pocket until risk slots are filled.
-    for move in buy_moves:
-        ticker = move.get("ticker")
-        try:
-            kind, _ = classify_ticker(ticker) if ticker else ("mixed", None)
-        except Exception:
-            kind = "mixed"
-        if not jumpy_kind(kind):
-            _try_buy(move, keep=pocket)
-
+    # If research left cash idle, keep shopping candidates it would like — no forced steadier bias.
     marked = snapshot()
     cash = float(marked.get("cash_gbp") or 0)
     total = float(marked.get("total_gbp") or STARTING_GBP)
     raw = load_wallet().get("holdings") or []
     held = {h.get("ticker") for h in raw if h.get("ticker")}
-    pocket = _risk_pocket_needed(raw, total)
-
-    # Fill missing risk tickets from the pocket, then put leftover into steadier names.
-    if cash >= 10:
+    if cash >= 15:
         for ticker in _candidates(boards, held):
-            if cash < 10:
+            if cash < 15:
                 break
             if ticker not in held and len(held) >= MAX_HOLDINGS:
-                continue
-            try:
-                kind, _ = classify_ticker(ticker)
-            except Exception:
-                continue
-            if not jumpy_kind(kind):
-                continue
-            if kind in _risk_kinds_held(raw):
-                continue
-            amount = _stake_amount("small", kind, cash, total, keep=0.0)
-            if amount < 10:
-                continue
-            why = (
-                f"Reserved a tiny pretend risk ticket in {ticker} (£{amount:.0f}, {kind}). "
-                "Most of the pile stays in steadier names. Only fake money."
-            )
-            try:
-                buy(ticker, amount, kind=kind, reason=why)
-                log.append({"action": "buy", "ticker": ticker, "why": why})
-                held.add(ticker)
-                cash -= amount
-                raw = load_wallet().get("holdings") or []
-                pocket = _risk_pocket_needed(raw, total)
-            except ValueError:
-                continue
-
-    marked = snapshot()
-    cash = float(marked.get("cash_gbp") or 0)
-    total = float(marked.get("total_gbp") or STARTING_GBP)
-    raw = load_wallet().get("holdings") or []
-    held = {h.get("ticker") for h in raw if h.get("ticker")}
-    pocket = _risk_pocket_needed(raw, total)
-
-    if cash >= 10:
-        for ticker in _candidates(boards, held):
-            if cash < 10:
                 break
-            if ticker not in held and len(held) >= MAX_HOLDINGS:
-                continue
             try:
-                kind, _ = classify_ticker(ticker)
+                file = assemble_file(ticker)
+                move = heuristic_move(file, mode="buy")
             except Exception:
                 continue
-            if kind != "steadier":
+            if move.get("action") != "buy":
                 continue
-            amount = _stake_amount("large", kind, cash, total, keep=pocket)
-            if amount < 10:
-                continue
-            why = (
-                f"Still had pretend £{amount:.0f} after the risk pocket. Looked at {ticker} — a real business on paper — and put it to work."
-            )
-            try:
-                buy(ticker, amount, kind=kind, reason=why)
-                log.append({"action": "buy", "ticker": ticker, "why": why})
-                held.add(ticker)
-                cash -= amount
-                raw = load_wallet().get("holdings") or []
-                pocket = _risk_pocket_needed(raw, total)
-            except ValueError:
-                continue
+            _try_buy(move)
+            cash = float(snapshot().get("cash_gbp") or 0)
+            held = {h.get("ticker") for h in (load_wallet().get("holdings") or []) if h.get("ticker")}
 
     if cash >= 10:
         log.append(
             {
                 "action": "wait",
                 "ticker": "",
-                "why": f"Still £{cash:.0f} pretend cash idle (risk pocket or no clean name left).",
+                "why": f"Still £{cash:.0f} pretend cash idle — no research buy left this pass.",
             }
         )
 
