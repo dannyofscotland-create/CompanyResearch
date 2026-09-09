@@ -16,14 +16,16 @@ from companyresearch.screens import (
 from companyresearch.sources.market import fetch_snapshot, normalize_ticker
 from companyresearch.sources.news import search_angle
 
-PLAN_SYS = """You run a pretend wallet in a free test.
-CRITICAL: only BUY if research_depth is "full" and the pre-buy dig is done. Never buy on a skim.
-If attack_level is confirmed or watch after full research, SKIP — do not buy and regret later.
-If after full research you like a stock, BUY it. Size by conviction: large / medium / small.
-Do NOT flip-flop. If hours_held is under 8, HOLD unless attack_level is confirmed with a named short report or going-concern.
-SELL only for a real thesis break, confirmed attack after the hold rules, a serious loss after the hold period, or locking a large win after the hold period.
-Skip a buy if the file is thin, not fully researched, attack_level is confirmed/watch, or recently_sold.
-Do NOT sell or skip because of Wikipedia, forums, video-game pages, or a headline that is not about this ticker.
+PLAN_SYS = """You run a pretend wallet. Goal: grow the fake pounds over time — not thrill-seeking.
+CRITICAL: only BUY if research_depth is "full". Never buy on a skim.
+Put MOST money in steadier businesses that already make profits (kind=steadier, high quality).
+Keep flyers (endorsement/longshot/bear/gamble) to a small slice — skip them unless the file is exceptional.
+If attack_level is confirmed (named short report / going concern / SEC charges), SKIP buys; SELL holdings after hold rules.
+If attack_level is watch, do NOT dump a steadier name; maybe skip a new flyer buy.
+Do NOT flip-flop. If hours_held is under 8, HOLD unless attack_level is confirmed.
+Prefer HOLD on winners that are steadier. Cut flyer losers. Redeploy cash into steadier names.
+Skip recently_sold names.
+Do NOT sell because of Wikipedia, forums, or unrelated pages.
 Return ONLY JSON:
 {"moves":[{"ticker":"X","action":"buy"|"sell"|"hold"|"skip","why":"plain words as if talking","size":"small"|"medium"|"large"}]}
 This is pretend. Never tell anyone to hand over real cash.
@@ -32,6 +34,8 @@ This is pretend. Never tell anyone to hand over real cash.
 MIN_HOLD_HOURS = 8.0
 CONFIRMED_HOLD_HOURS = 2.0
 REBUY_COOLDOWN_HOURS = 24.0
+# Max share of the pile allowed in jumpy names.
+RISK_MAX_FRAC = 0.25
 
 
 
@@ -62,7 +66,7 @@ def kind_of(snap: dict[str, Any]) -> str:
 def assemble_file(ticker: str, *, deep: bool = False) -> dict[str, Any]:
     """Build a research file. deep=True = full pre-buy dig (must finish before any buy)."""
     symbol = normalize_ticker(ticker)
-    cache_key = f"desk:v4:{'deep' if deep else 'lite'}:{symbol}"
+    cache_key = f"desk:v5:{'deep' if deep else 'lite'}:{symbol}"
     cached = cache.get(cache_key, ttl_seconds=(50 if deep else 25) * 60)
     if cached:
         return cached
@@ -212,11 +216,11 @@ def heuristic_move(file: dict[str, Any], *, mode: str, pnl: float | None = None)
     quality = int(file.get("quality") or 0)
     hours_held = float(file.get("hours_held") or 999)
     recently_sold = bool(file.get("recently_sold"))
+    risk_ok = file.get("risk_room", True)
     headlines = [str(h) for h in (file.get("headlines") or []) if h][:3]
     bits = ", ".join(headlines) if headlines else "thin headlines"
     if mode == "review":
         drop = pnl if pnl is not None else 0.0
-        # Fresh buys get a settle period — no "buy then regret next pass".
         if ugly and hours_held >= CONFIRMED_HOLD_HOURS:
             hit = file.get("crash_headline") or "a confirmed report about this company"
             return {
@@ -235,34 +239,33 @@ def heuristic_move(file: dict[str, Any], *, mode: str, pnl: float | None = None)
                     "Giving the bet time to play — not flipping on a second skim."
                 ),
             }
-        if drop <= -0.25:
+        if jumpy_kind(kind) and drop <= -0.15:
             return {
                 "ticker": ticker,
                 "action": "sell",
                 "size": "all",
-                "why": f"Looked again at {ticker}: pretend stake down about {abs(drop)*100:.0f}% after a fair hold. Cutting the loss.",
+                "why": f"Flyer {ticker} down ~{abs(drop)*100:.0f}% after a fair hold. Cutting it to protect the pile.",
             }
-        if drop >= 0.50:
+        if kind == "steadier" and drop <= -0.28:
             return {
                 "ticker": ticker,
                 "action": "sell",
                 "size": "all",
-                "why": f"{ticker} is up about {drop*100:.0f}% on pretend money after a fair hold. Banking the test win.",
+                "why": f"Steadier {ticker} down ~{abs(drop)*100:.0f}% after a fair hold. Thesis looks broken — selling.",
             }
-        if file.get("attack_level") == "watch" and drop <= -0.12:
+        if jumpy_kind(kind) and drop >= 0.35:
             return {
                 "ticker": ticker,
                 "action": "sell",
                 "size": "all",
-                "why": f"Looked at {ticker} again: proper ugly headline and down ~{abs(drop)*100:.0f}% after a fair hold. Selling.",
+                "why": f"Flyer {ticker} up ~{drop*100:.0f}%. Banking the gain and moving back toward steadier names.",
             }
         return {
             "ticker": ticker,
             "action": "hold",
             "size": "all",
-            "why": f"Looked at {ticker} again. Still want it on the file ({bits}). Holding pretend.",
+            "why": f"Looked at {ticker} again. Still fits the money plan ({bits}). Holding pretend.",
         }
-    # buy — only after a full pre-buy dig
     if recently_sold:
         return {
             "ticker": ticker,
@@ -284,42 +287,73 @@ def heuristic_move(file: dict[str, Any], *, mode: str, pnl: float | None = None)
             "size": "small",
             "why": f"Full research on {ticker} found confirmed trouble. Not putting fake money in.",
         }
-    if file.get("attack_level") == "watch":
+    if jumpy_kind(kind) and file.get("attack_level") == "watch":
         return {
             "ticker": ticker,
             "action": "skip",
             "size": "small",
-            "why": f"Full research on {ticker} left an ugly watch flag. Skipping so we do not buy then regret.",
+            "why": f"Full research on flyer {ticker} left a watch flag. Skipping — protecting the pile.",
         }
-    if quality < 38 and kind in {"mixed", "gamble"} and not jumpy_kind(kind):
+    if jumpy_kind(kind) and not risk_ok:
         return {
             "ticker": ticker,
             "action": "skip",
             "size": "small",
-            "why": f"Full research on {ticker}: file still too thin. Skipping.",
+            "why": f"Liked {ticker} but the flyer pocket is already full. Keeping cash for steadier names.",
+        }
+    if kind == "endorsement":
+        return {
+            "ticker": ticker,
+            "action": "skip",
+            "size": "small",
+            "why": f"Skipping endorsement lottery {ticker} — money plan prefers real businesses.",
+        }
+    if jumpy_kind(kind) and quality < 48:
+        return {
+            "ticker": ticker,
+            "action": "skip",
+            "size": "small",
+            "why": f"Flyer {ticker} is too weak on quality after full research. Skipping.",
         }
     pages = int((file.get("attack") or {}).get("prebuy_pages_opened") or 0)
     dig = f" after opening {pages} page(s)" if pages else " after the full dig"
-    if kind == "steadier" and quality >= 52:
-        size = "large"
-        why = f"Full research on {ticker}{dig}: already makes money on the public numbers. Buying for the test."
-    elif jumpy_kind(kind):
-        size = "medium" if quality >= 40 else "small"
-        why = (
-            f"Full research on {ticker} ({kind}){dig}. No confirmed/watch trouble left. "
-            f"File looks interesting ({bits}). Buying — and will hold it a while."
-        )
-    elif quality >= 45:
-        size = "large" if quality >= 58 else "medium"
-        why = f"Full research on {ticker}{dig}: looks ok ({bits}). Putting pretend money in."
-    else:
+    if kind == "steadier" and quality >= 55:
         return {
             "ticker": ticker,
-            "action": "skip",
-            "size": "small",
-            "why": f"Full research on {ticker}: not convinced. Skipping.",
+            "action": "buy",
+            "size": "large",
+            "why": f"Full research on {ticker}{dig}: profitable business on the numbers. Core money bet.",
         }
-    return {"ticker": ticker, "action": "buy", "size": size, "why": why}
+    if kind == "steadier" and quality >= 50:
+        return {
+            "ticker": ticker,
+            "action": "buy",
+            "size": "medium",
+            "why": f"Full research on {ticker}{dig}: steadier enough for the money plan ({bits}).",
+        }
+    if not jumpy_kind(kind) and quality >= 58:
+        return {
+            "ticker": ticker,
+            "action": "buy",
+            "size": "medium",
+            "why": f"Full research on {ticker}{dig}: solid mixed name ({bits}). Buying for growth.",
+        }
+    if jumpy_kind(kind) and quality >= 48 and risk_ok:
+        return {
+            "ticker": ticker,
+            "action": "buy",
+            "size": "small",
+            "why": (
+                f"Full research on {ticker} ({kind}){dig}. Tiny flyer sleeve only — most cash stays steadier. "
+                f"({bits})"
+            ),
+        }
+    return {
+        "ticker": ticker,
+        "action": "skip",
+        "size": "small",
+        "why": f"Full research on {ticker}: does not clear the money-first bar. Skipping.",
+    }
 
 
 def plan_pass(
@@ -334,6 +368,11 @@ def plan_pass(
     """Research holdings and candidates, then decide like a person. One LLM pass if available."""
     sold = {str(t).upper() for t in (recently_sold or set())}
     held_hours = {str(k).upper(): float(v) for k, v in (hours_held_of or {}).items()}
+    risk_used = 0.0
+    for row in holding_rows:
+        if jumpy_kind(str(row.get("kind") or "")):
+            risk_used += float(row.get("now_gbp") or row.get("spent_gbp") or 0)
+    risk_room = risk_used < max(1.0, total * RISK_MAX_FRAC)
     files: list[dict[str, Any]] = []
     for row in holding_rows:
         ticker = row.get("ticker")
@@ -353,7 +392,7 @@ def plan_pass(
         file["hours_held"] = held_hours.get(str(ticker).upper(), 999.0)
         files.append(file)
     seen = {f.get("ticker") for f in files}
-    deep_budget = 5
+    deep_budget = 6
     for ticker in candidate_tickers:
         if ticker in seen:
             continue
@@ -367,6 +406,7 @@ def plan_pass(
         deep_budget -= 1
         file["mode"] = "buy"
         file["recently_sold"] = str(ticker).upper() in sold
+        file["risk_room"] = risk_room
         files.append(file)
         seen.add(ticker)
 
@@ -421,11 +461,23 @@ def _calm_moves(moves: list[dict[str, Any]], files: list[dict[str, Any]]) -> lis
                 "action": "skip",
                 "why": f"Blocked buy of {ticker}: full research was not finished.",
             }
-        if action == "buy" and file.get("attack_level") in {"confirmed", "watch"}:
+        if action == "buy" and file.get("attack_level") == "confirmed":
             move = {
                 **move,
                 "action": "skip",
-                "why": f"Full research flagged {ticker} ({file.get('attack_level')}). Not buying.",
+                "why": f"Full research flagged {ticker} (confirmed). Not buying.",
+            }
+        if action == "buy" and jumpy_kind(str(file.get("kind") or "")) and file.get("attack_level") == "watch":
+            move = {
+                **move,
+                "action": "skip",
+                "why": f"Full research flagged flyer {ticker} (watch). Not buying.",
+            }
+        if action == "buy" and jumpy_kind(str(file.get("kind") or "")) and file.get("risk_room") is False:
+            move = {
+                **move,
+                "action": "skip",
+                "why": f"Flyer pocket full — skipped {ticker} for steadier cash use.",
             }
         if action == "buy" and file.get("recently_sold"):
             move = {
@@ -462,7 +514,7 @@ def _llm_plan(files: list[dict[str, Any]], cash: float, total: float) -> list[di
     payload = {
         "cash_gbp": round(cash, 2),
         "total_gbp": round(total, 2),
-        "note": "Only buy after research_depth=full. Skip watch/confirmed. Do not churn.",
+        "note": "Grow pretend pounds: mostly steadier names, tiny flyer sleeve, full research before buys.",
         "desk": slim,
     }
     try:

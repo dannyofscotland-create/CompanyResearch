@@ -131,14 +131,14 @@ def confirm_attack(ticker: str, name: str, sources: list[dict[str, Any]]) -> dic
         level = "confirmed"
         hits = hard[:4]
         note = "A named report or official-sounding trouble about this company, from a source that is not a forum."
-    elif len(soft) >= 2 and len(independent) >= 2:
-        level = "confirmed"
-        hits = soft[:4]
-        note = "Two separate proper news sources, both actually about this ticker."
     elif soft:
+        # Soft headlines (class actions, dilution talk) are a watch — not an automatic dump.
         level = "watch"
         hits = soft[:3]
-        note = "One proper headline looks ugly. A person would watch, not dump the whole stake on that alone."
+        note = (
+            "Ugly soft headlines about this ticker. Watch closely, but do not treat that alone "
+            "like a named short report."
+        )
     else:
         level = "clear"
         hits = []
@@ -149,6 +149,9 @@ def confirm_attack(ticker: str, name: str, sources: list[dict[str, Any]]) -> dic
         "ignored": ignored[:6],
         "note": note,
         "headline": (hits[0]["title"] if hits else None),
+        "hard_n": len(hard),
+        "soft_n": len(soft),
+        "independent_n": len(independent),
     }
 
 

@@ -8,8 +8,10 @@ from companyresearch import cache
 from companyresearch.config import settings
 from companyresearch.desk import (
     REBUY_COOLDOWN_HOURS,
+    RISK_MAX_FRAC,
     assemble_file,
     heuristic_move,
+    jumpy_kind,
     kind_of,
     plan_pass,
 )
@@ -361,27 +363,30 @@ def sell(ticker: str, reason: str | None = None) -> dict[str, Any]:
 
 
 def _stake_amount(size: str, kind: str, cash: float, total: float, *, keep: float = 0.0) -> float:
-    """Size a pretend buy from research conviction. `keep` is unused in free-test mode."""
+    """Size buys for a money-first book: larger steadier, tiny flyers."""
     if cash < 10:
         return 0.0
     spendable = max(0.0, cash - max(0.0, keep))
     if spendable < 10:
         return 0.0
-    # Free test: let research size the bet — large can be a real chunk of the pile.
-    if size == "small":
-        want = min(max(10.0, total * 0.10), 60.0, spendable)
+    jumpy = jumpy_kind(kind)
+    if jumpy:
+        want = min(max(10.0, total * 0.08), 40.0, spendable)
+    elif size == "small":
+        want = min(max(10.0, total * 0.12), spendable)
     elif size == "large":
-        want = min(max(10.0, total * 0.40), spendable)
+        want = min(max(10.0, total * 0.32), spendable)
     else:
-        want = min(max(10.0, total * 0.22), spendable)
+        want = min(max(10.0, total * 0.20), spendable)
     leftover = cash - want
-    if leftover < MIN_CASH and leftover >= 0:
+    if leftover < MIN_CASH and leftover >= 0 and not jumpy:
         want = cash
     return round(want, 2)
 
 
 def _candidates(boards: dict[str, Any], held: set[str]) -> list[str]:
-    order = ("endorsement", "longshot", "bear", "quality", "speculative")
+    # Steadier / quality first — money plan, not lottery board first.
+    order = ("quality", "speculative", "longshot", "bear", "endorsement")
     out: list[str] = []
     seen: set[str] = set(held)
     for key in order:
@@ -394,8 +399,16 @@ def _candidates(boards: dict[str, Any], held: set[str]) -> list[str]:
     return out
 
 
+def _risk_gbp(holdings: list[dict[str, Any]]) -> float:
+    return sum(
+        float(h.get("now_gbp") or h.get("spent_gbp") or 0)
+        for h in holdings
+        if jumpy_kind(str(h.get("kind") or ""))
+    )
+
+
 def autopilot() -> dict[str, Any]:
-    """Research, then freely buy/sell pretend money for the test. Never real accounts."""
+    """Research, then grow pretend pounds with a steadier-first book. Never real accounts."""
     log: list[dict[str, Any]] = []
     marked = snapshot()
     wallet = load_wallet()
@@ -434,6 +447,11 @@ def autopilot() -> dict[str, Any]:
     raw = load_wallet().get("holdings") or []
     held = {h.get("ticker") for h in raw if h.get("ticker")}
     now_of = {h.get("ticker"): float(h.get("now_gbp") or 0) for h in marked.get("holdings") or []}
+    # Refresh kinds onto marked rows for risk math.
+    for h in marked.get("holdings") or []:
+        for r in raw:
+            if r.get("ticker") == h.get("ticker"):
+                h["kind"] = r.get("kind") or h.get("kind")
 
     buy_moves = [m for m in moves if m.get("action") == "buy"]
     other_moves = [m for m in moves if m.get("action") in {"hold", "skip"}]
@@ -441,7 +459,7 @@ def autopilot() -> dict[str, Any]:
         log.append({"action": move.get("action"), "ticker": move.get("ticker") or "", "why": move.get("why") or ""})
 
     def _try_buy(move: dict[str, Any]) -> None:
-        nonlocal cash, held, now_of
+        nonlocal cash, held, now_of, raw
         ticker = move.get("ticker")
         why = move.get("why") or ""
         if not ticker:
@@ -465,7 +483,29 @@ def autopilot() -> dict[str, Any]:
             kind, _ = classify_ticker(ticker)
         except Exception:
             kind = "mixed"
+        risk_now = _risk_gbp(
+            [
+                {
+                    "ticker": t,
+                    "kind": next((r.get("kind") for r in raw if r.get("ticker") == t), "mixed"),
+                    "now_gbp": now_of.get(t, 0),
+                }
+                for t in held
+            ]
+        )
+        if jumpy_kind(kind) and risk_now >= total * RISK_MAX_FRAC:
+            log.append(
+                {
+                    "action": "skip",
+                    "ticker": ticker,
+                    "why": f"Flyer pocket already ~{100 * RISK_MAX_FRAC:.0f}% of the pile. Keeping cash for steadier names.",
+                }
+            )
+            return
         amount = _stake_amount(str(move.get("size") or "medium"), kind, cash, total, keep=0.0)
+        if jumpy_kind(kind):
+            room = max(0.0, total * RISK_MAX_FRAC - risk_now)
+            amount = min(amount, room)
         if amount < 10:
             log.append({"action": "skip", "ticker": ticker, "why": f"Liked {ticker} but not enough pretend cash left to size a bet."})
             return
@@ -475,13 +515,24 @@ def autopilot() -> dict[str, Any]:
             held.add(ticker)
             cash -= amount
             now_of[ticker] = now_of.get(ticker, 0.0) + amount
+            raw = load_wallet().get("holdings") or []
         except ValueError as exc:
             log.append({"action": "skip", "ticker": ticker, "why": str(exc)})
 
-    for move in buy_moves:
+    # Steadier buys first, then any tiny flyer buys.
+    def _kind_of_move(move: dict[str, Any]) -> str:
+        try:
+            k, _ = classify_ticker(move.get("ticker") or "")
+            return k
+        except Exception:
+            return "mixed"
+
+    steady_buys = [m for m in buy_moves if not jumpy_kind(_kind_of_move(m))]
+    flyer_buys = [m for m in buy_moves if jumpy_kind(_kind_of_move(m))]
+    for move in steady_buys + flyer_buys:
         _try_buy(move)
 
-    # If research left cash idle, keep shopping candidates it would like — no forced steadier bias.
+    # Redeploy idle cash into researched steadier / quality names.
     marked = snapshot()
     cash = float(marked.get("cash_gbp") or 0)
     total = float(marked.get("total_gbp") or STARTING_GBP)
@@ -489,19 +540,30 @@ def autopilot() -> dict[str, Any]:
     held = {h.get("ticker") for h in raw if h.get("ticker")}
     if cash >= 15:
         extra_deep = 0
-        for ticker in _candidates(boards, held):
+        quality_first = list(boards.get("quality") or []) + list(boards.get("speculative") or [])
+        tickers = []
+        seen = set(held)
+        for item in quality_first:
+            t = item.get("ticker")
+            if t and t not in seen:
+                seen.add(t)
+                tickers.append(t)
+        for ticker in tickers:
             if cash < 15:
                 break
             if ticker not in held and len(held) >= MAX_HOLDINGS:
                 break
             if str(ticker).upper() in sold_recent:
                 continue
-            if extra_deep >= 3:
+            if extra_deep >= 5:
                 break
             try:
                 file = assemble_file(ticker, deep=True)
                 extra_deep += 1
                 file["recently_sold"] = str(ticker).upper() in sold_recent
+                file["risk_room"] = _risk_gbp(
+                    [{"kind": r.get("kind"), "now_gbp": now_of.get(r.get("ticker"), 0)} for r in raw]
+                ) < total * RISK_MAX_FRAC
                 move = heuristic_move(file, mode="buy")
             except Exception:
                 continue
@@ -515,16 +577,25 @@ def autopilot() -> dict[str, Any]:
                         }
                     )
                 continue
+            # Prefer not to spend redeploy cash on flyers.
+            try:
+                kind, _ = classify_ticker(ticker)
+            except Exception:
+                kind = "mixed"
+            if jumpy_kind(kind):
+                continue
             _try_buy(move)
             cash = float(snapshot().get("cash_gbp") or 0)
-            held = {h.get("ticker") for h in (load_wallet().get("holdings") or []) if h.get("ticker")}
+            raw = load_wallet().get("holdings") or []
+            held = {h.get("ticker") for h in raw if h.get("ticker")}
+            now_of = {h.get("ticker"): float(h.get("now_gbp") or 0) for h in snapshot().get("holdings") or []}
 
     if cash >= 10:
         log.append(
             {
                 "action": "wait",
                 "ticker": "",
-                "why": f"Still £{cash:.0f} pretend cash idle — no research buy left this pass.",
+                "why": f"Still £{cash:.0f} pretend cash idle — waiting for a steadier researched name.",
             }
         )
 
