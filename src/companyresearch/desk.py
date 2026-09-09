@@ -16,26 +16,25 @@ from companyresearch.screens import (
 from companyresearch.sources.market import fetch_snapshot, normalize_ticker
 from companyresearch.sources.news import search_angle
 
-PLAN_SYS = """You run a pretend wallet. Goal: grow the fake pounds over time — not thrill-seeking.
-CRITICAL: only BUY if research_depth is "full". Never buy on a skim.
-Put MOST money in steadier businesses that already make profits (kind=steadier, high quality).
-Keep flyers (endorsement/longshot/bear/gamble) to a small slice — skip them unless the file is exceptional.
-If attack_level is confirmed (named short report / going concern / SEC charges), SKIP buys; SELL holdings after hold rules.
-If attack_level is watch, do NOT dump a steadier name; maybe skip a new flyer buy.
-Do NOT flip-flop. If hours_held is under 8, HOLD unless attack_level is confirmed.
-Prefer HOLD on winners that are steadier. Cut flyer losers. Redeploy cash into steadier names.
-Skip recently_sold names.
-Do NOT sell because of Wikipedia, forums, or unrelated pages.
+PLAN_SYS = """You run a pretend wallet like a professional investor with a months-to-couple-years horizon — not a 10-year pension autopilot, and not a meme lottery.
+CRITICAL: only BUY if research_depth is "full".
+Pros buy: (1) quality growth — real businesses with profits and/or rising revenue, (2) a researched opportunity sleeve when the file is strong.
+Pros avoid: endorsement/meme pumps, buying on a skim, ignoring confirmed short reports.
+Allocation vibe: most of the pile in quality/growth, up to about 40% in higher-upside researched names (longshot/bear/gamble) if the dig clears.
+SELL when the thesis breaks, confirmed attack, a real loss after the hold period, or bank a solid gain (~20%+) — do not sit forever on a flat defensive name if better researched growth exists.
+Do NOT flip under ~4 hours held unless attack_level is confirmed.
+Skip recently_sold. Skip endorsement lotteries.
+Do NOT sell on Wikipedia/forums.
 Return ONLY JSON:
 {"moves":[{"ticker":"X","action":"buy"|"sell"|"hold"|"skip","why":"plain words as if talking","size":"small"|"medium"|"large"}]}
 This is pretend. Never tell anyone to hand over real cash.
 """
 
-MIN_HOLD_HOURS = 8.0
-CONFIRMED_HOLD_HOURS = 2.0
-REBUY_COOLDOWN_HOURS = 24.0
-# Max share of the pile allowed in jumpy names.
-RISK_MAX_FRAC = 0.25
+MIN_HOLD_HOURS = 4.0
+CONFIRMED_HOLD_HOURS = 1.5
+REBUY_COOLDOWN_HOURS = 18.0
+# Higher-upside sleeve (researched) — pros take measured risk for return.
+RISK_MAX_FRAC = 0.40
 
 
 
@@ -66,7 +65,7 @@ def kind_of(snap: dict[str, Any]) -> str:
 def assemble_file(ticker: str, *, deep: bool = False) -> dict[str, Any]:
     """Build a research file. deep=True = full pre-buy dig (must finish before any buy)."""
     symbol = normalize_ticker(ticker)
-    cache_key = f"desk:v5:{'deep' if deep else 'lite'}:{symbol}"
+    cache_key = f"desk:v6:{'deep' if deep else 'lite'}:{symbol}"
     cached = cache.get(cache_key, ttl_seconds=(50 if deep else 25) * 60)
     if cached:
         return cached
@@ -103,6 +102,14 @@ def assemble_file(ticker: str, *, deep: bool = False) -> dict[str, Any]:
                     f'"{symbol}" {name} bankruptcy OR "going concern" OR offering OR dilution OR "share sale"',
                     "text",
                     "cash and dilution risk",
+                    5,
+                )
+            )
+            rows.extend(
+                search_angle(
+                    f'"{symbol}" {name} "earnings beat" OR "raises guidance" OR "analyst upgrade" OR institutional',
+                    "news",
+                    "what pros watch: earnings and institutional flow",
                     5,
                 )
             )
@@ -209,6 +216,30 @@ def jumpy_kind(kind: str) -> bool:
     return kind in {"longshot", "gamble", "endorsement", "bear"}
 
 
+def _num_field(file: dict[str, Any], key: str) -> float | None:
+    try:
+        value = file.get(key)
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pro_growth(file: dict[str, Any]) -> bool:
+    """Rough 'pro growth' tell: rising sales and/or real profits."""
+    growth = _num_field(file, "revenueGrowth")
+    margins = _num_field(file, "profitMargins")
+    quality = int(file.get("quality") or 0)
+    if margins is not None and margins > 0.08 and quality >= 52:
+        return True
+    if growth is not None and growth >= 0.12 and quality >= 48:
+        return True
+    if growth is not None and growth >= 0.20:
+        return True
+    return False
+
+
 def heuristic_move(file: dict[str, Any], *, mode: str, pnl: float | None = None) -> dict[str, Any]:
     ticker = file["ticker"]
     kind = file.get("kind") or "mixed"
@@ -217,6 +248,7 @@ def heuristic_move(file: dict[str, Any], *, mode: str, pnl: float | None = None)
     hours_held = float(file.get("hours_held") or 999)
     recently_sold = bool(file.get("recently_sold"))
     risk_ok = file.get("risk_room", True)
+    growth = _pro_growth(file)
     headlines = [str(h) for h in (file.get("headlines") or []) if h][:3]
     bits = ", ".join(headlines) if headlines else "thin headlines"
     if mode == "review":
@@ -227,132 +259,129 @@ def heuristic_move(file: dict[str, Any], *, mode: str, pnl: float | None = None)
                 "ticker": ticker,
                 "action": "sell",
                 "size": "all",
-                "why": f"Second look on {ticker}: confirmed trouble about this ticker ({hit}). Selling pretend.",
+                "why": f"Second look on {ticker}: confirmed trouble ({hit}). Pros cut when the story breaks.",
             }
         if hours_held < MIN_HOLD_HOURS:
             return {
                 "ticker": ticker,
                 "action": "hold",
                 "size": "all",
-                "why": (
-                    f"Looked at {ticker} again after only ~{hours_held:.0f}h. "
-                    "Giving the bet time to play — not flipping on a second skim."
-                ),
+                "why": f"Only ~{hours_held:.0f}h in {ticker}. Pros do not flip every skim.",
             }
-        if jumpy_kind(kind) and drop <= -0.15:
+        # Bank gains on a pro horizon — do not wait a decade.
+        if drop >= 0.22:
             return {
                 "ticker": ticker,
                 "action": "sell",
                 "size": "all",
-                "why": f"Flyer {ticker} down ~{abs(drop)*100:.0f}% after a fair hold. Cutting it to protect the pile.",
+                "why": f"{ticker} up ~{drop*100:.0f}%. Banking like a pro and freeing cash for the next researched idea.",
             }
-        if kind == "steadier" and drop <= -0.28:
+        if jumpy_kind(kind) and drop <= -0.16:
             return {
                 "ticker": ticker,
                 "action": "sell",
                 "size": "all",
-                "why": f"Steadier {ticker} down ~{abs(drop)*100:.0f}% after a fair hold. Thesis looks broken — selling.",
+                "why": f"Higher-upside {ticker} down ~{abs(drop)*100:.0f}%. Cutting the loser — pros do not marry names.",
             }
-        if jumpy_kind(kind) and drop >= 0.35:
+        if not jumpy_kind(kind) and drop <= -0.22:
             return {
                 "ticker": ticker,
                 "action": "sell",
                 "size": "all",
-                "why": f"Flyer {ticker} up ~{drop*100:.0f}%. Banking the gain and moving back toward steadier names.",
+                "why": f"{ticker} down ~{abs(drop)*100:.0f}% after a fair hold. Thesis soft — rotating.",
+            }
+        # Flat defensive names: free cash if something better may exist (mild nudge via sell of dead money).
+        if kind == "steadier" and not growth and -0.03 <= drop <= 0.05 and hours_held >= 48:
+            return {
+                "ticker": ticker,
+                "action": "sell",
+                "size": "all",
+                "why": f"{ticker} is flat/defensive with little growth tell. Rotating toward stronger growth research.",
             }
         return {
             "ticker": ticker,
             "action": "hold",
             "size": "all",
-            "why": f"Looked at {ticker} again. Still fits the money plan ({bits}). Holding pretend.",
+            "why": f"{ticker} still fits a pro-style book ({bits}). Holding.",
         }
     if recently_sold:
         return {
             "ticker": ticker,
             "action": "skip",
             "size": "small",
-            "why": f"Sold {ticker} recently. Not buying it straight back — that was the flip-flop.",
+            "why": f"Sold {ticker} recently. Not buying it straight back.",
         }
     if file.get("research_depth") != "full":
         return {
             "ticker": ticker,
             "action": "skip",
             "size": "small",
-            "why": f"Have not finished full research on {ticker} yet. Will not buy on a skim.",
+            "why": f"Research on {ticker} not finished. Pros do not buy headlines only.",
         }
     if ugly:
         return {
             "ticker": ticker,
             "action": "skip",
             "size": "small",
-            "why": f"Full research on {ticker} found confirmed trouble. Not putting fake money in.",
-        }
-    if jumpy_kind(kind) and file.get("attack_level") == "watch":
-        return {
-            "ticker": ticker,
-            "action": "skip",
-            "size": "small",
-            "why": f"Full research on flyer {ticker} left a watch flag. Skipping — protecting the pile.",
-        }
-    if jumpy_kind(kind) and not risk_ok:
-        return {
-            "ticker": ticker,
-            "action": "skip",
-            "size": "small",
-            "why": f"Liked {ticker} but the flyer pocket is already full. Keeping cash for steadier names.",
+            "why": f"Confirmed trouble on {ticker}. Pros pass.",
         }
     if kind == "endorsement":
         return {
             "ticker": ticker,
             "action": "skip",
             "size": "small",
-            "why": f"Skipping endorsement lottery {ticker} — money plan prefers real businesses.",
+            "why": f"Skipping {ticker} endorsement/meme shape — not how pros size a book.",
         }
-    if jumpy_kind(kind) and quality < 48:
+    if jumpy_kind(kind) and file.get("attack_level") == "watch":
         return {
             "ticker": ticker,
             "action": "skip",
             "size": "small",
-            "why": f"Flyer {ticker} is too weak on quality after full research. Skipping.",
+            "why": f"Watch flag on higher-upside {ticker}. Passing until cleaner.",
+        }
+    if jumpy_kind(kind) and not risk_ok:
+        return {
+            "ticker": ticker,
+            "action": "skip",
+            "size": "small",
+            "why": f"Opportunity sleeve full — skipped {ticker}. Keeping room in the book.",
         }
     pages = int((file.get("attack") or {}).get("prebuy_pages_opened") or 0)
-    dig = f" after opening {pages} page(s)" if pages else " after the full dig"
-    if kind == "steadier" and quality >= 55:
+    dig = f" after opening {pages} page(s)" if pages else " after full dig"
+    # Core: quality growth (pro bread and butter).
+    if (kind == "steadier" or not jumpy_kind(kind)) and (growth or quality >= 56):
+        size = "large" if (growth and quality >= 54) or quality >= 60 else "medium"
+        label = "quality growth" if growth else "quality"
         return {
             "ticker": ticker,
             "action": "buy",
-            "size": "large",
-            "why": f"Full research on {ticker}{dig}: profitable business on the numbers. Core money bet.",
+            "size": size,
+            "why": f"Pro-style {label} buy on {ticker}{dig} ({bits}).",
         }
-    if kind == "steadier" and quality >= 50:
+    # Opportunity sleeve: researched upside with a bar.
+    if jumpy_kind(kind) and quality >= 46 and risk_ok:
+        size = "medium" if quality >= 52 or growth else "small"
         return {
             "ticker": ticker,
             "action": "buy",
-            "size": "medium",
-            "why": f"Full research on {ticker}{dig}: steadier enough for the money plan ({bits}).",
-        }
-    if not jumpy_kind(kind) and quality >= 58:
-        return {
-            "ticker": ticker,
-            "action": "buy",
-            "size": "medium",
-            "why": f"Full research on {ticker}{dig}: solid mixed name ({bits}). Buying for growth.",
-        }
-    if jumpy_kind(kind) and quality >= 48 and risk_ok:
-        return {
-            "ticker": ticker,
-            "action": "buy",
-            "size": "small",
+            "size": size,
             "why": (
-                f"Full research on {ticker} ({kind}){dig}. Tiny flyer sleeve only — most cash stays steadier. "
-                f"({bits})"
+                f"Researched opportunity sleeve: {ticker} ({kind}){dig}. "
+                f"Sized for upside, not the whole pile. ({bits})"
             ),
+        }
+    if quality >= 50 and file.get("attack_level") != "watch":
+        return {
+            "ticker": ticker,
+            "action": "buy",
+            "size": "medium",
+            "why": f"Clear enough file on {ticker}{dig} for a pro-sized stake ({bits}).",
         }
     return {
         "ticker": ticker,
         "action": "skip",
         "size": "small",
-        "why": f"Full research on {ticker}: does not clear the money-first bar. Skipping.",
+        "why": f"{ticker} does not clear a pro research bar. Skipping.",
     }
 
 
@@ -514,7 +543,7 @@ def _llm_plan(files: list[dict[str, Any]], cash: float, total: float) -> list[di
     payload = {
         "cash_gbp": round(cash, 2),
         "total_gbp": round(total, 2),
-        "note": "Grow pretend pounds: mostly steadier names, tiny flyer sleeve, full research before buys.",
+        "note": "Pro-style: quality growth + researched opportunity sleeve. Bank gains; skip meme pumps.",
         "desk": slim,
     }
     try:

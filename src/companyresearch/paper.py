@@ -363,7 +363,7 @@ def sell(ticker: str, reason: str | None = None) -> dict[str, Any]:
 
 
 def _stake_amount(size: str, kind: str, cash: float, total: float, *, keep: float = 0.0) -> float:
-    """Size buys for a money-first book: larger steadier, tiny flyers."""
+    """Pro-style sizing: meaningful core stakes, measured opportunity sleeve."""
     if cash < 10:
         return 0.0
     spendable = max(0.0, cash - max(0.0, keep))
@@ -371,13 +371,16 @@ def _stake_amount(size: str, kind: str, cash: float, total: float, *, keep: floa
         return 0.0
     jumpy = jumpy_kind(kind)
     if jumpy:
-        want = min(max(10.0, total * 0.08), 40.0, spendable)
+        if size == "medium":
+            want = min(max(10.0, total * 0.14), 70.0, spendable)
+        else:
+            want = min(max(10.0, total * 0.10), 50.0, spendable)
     elif size == "small":
         want = min(max(10.0, total * 0.12), spendable)
     elif size == "large":
-        want = min(max(10.0, total * 0.32), spendable)
+        want = min(max(10.0, total * 0.28), spendable)
     else:
-        want = min(max(10.0, total * 0.20), spendable)
+        want = min(max(10.0, total * 0.18), spendable)
     leftover = cash - want
     if leftover < MIN_CASH and leftover >= 0 and not jumpy:
         want = cash
@@ -385,8 +388,8 @@ def _stake_amount(size: str, kind: str, cash: float, total: float, *, keep: floa
 
 
 def _candidates(boards: dict[str, Any], held: set[str]) -> list[str]:
-    # Steadier / quality first — money plan, not lottery board first.
-    order = ("quality", "speculative", "longshot", "bear", "endorsement")
+    # Growth/spec ideas alongside quality — how pros scan a desk.
+    order = ("speculative", "quality", "longshot", "bear", "endorsement")
     out: list[str] = []
     seen: set[str] = set(held)
     for key in order:
@@ -540,7 +543,11 @@ def autopilot() -> dict[str, Any]:
     held = {h.get("ticker") for h in raw if h.get("ticker")}
     if cash >= 15:
         extra_deep = 0
-        quality_first = list(boards.get("quality") or []) + list(boards.get("speculative") or [])
+        quality_first = (
+            list(boards.get("speculative") or [])
+            + list(boards.get("quality") or [])
+            + list(boards.get("longshot") or [])
+        )
         tickers = []
         seen = set(held)
         for item in quality_first:
@@ -577,12 +584,12 @@ def autopilot() -> dict[str, Any]:
                         }
                     )
                 continue
-            # Prefer not to spend redeploy cash on flyers.
+            # Opportunity sleeve allowed when risk room exists; still skip pure endorsement via heuristic.
             try:
                 kind, _ = classify_ticker(ticker)
             except Exception:
                 kind = "mixed"
-            if jumpy_kind(kind):
+            if kind == "endorsement":
                 continue
             _try_buy(move)
             cash = float(snapshot().get("cash_gbp") or 0)
@@ -595,7 +602,7 @@ def autopilot() -> dict[str, Any]:
             {
                 "action": "wait",
                 "ticker": "",
-                "why": f"Still £{cash:.0f} pretend cash idle — waiting for a steadier researched name.",
+                "why": f"Still £{cash:.0f} pretend cash idle — waiting for a pro-quality researched idea.",
             }
         )
 
