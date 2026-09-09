@@ -7,8 +7,11 @@ from typing import Any
 from companyresearch import cache
 from companyresearch.sources.market import fetch_snapshot, normalize_ticker
 
-# Cash-making giants plus smaller “could 10x or go to nothing” names. Not a buy list.
+# Cash-making giants plus smaller “could 10x or go to nothing” names across world markets.
+# Yahoo suffixes: .L London, .DE/.PA/.AS/.SW Europe, .T Tokyo, .HK Hong Kong, .TO Canada,
+# .AX Australia, .NS India, .KS Korea, .SA Brazil. US names have no suffix.
 UNIVERSE = [
+    # United States
     "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "AVGO", "ORCL", "AMD", "CRM",
     "BRK-B", "JNJ", "PG", "KO", "COST", "WMT", "UNH", "V", "MA", "HD",
     "JPM", "XOM", "PEP", "MCD", "ABBV", "LLY", "ACN", "NEE", "CAT", "LIN",
@@ -18,9 +21,31 @@ UNIVERSE = [
     "RIOT", "CLSK", "HUT", "IREN", "WULF", "CIFR", "BTBT", "BITF",
     "RGTI", "QUBT", "QBTS", "ASTS", "LUNR", "SPCE", "JOBY", "ACHR",
     "LEU", "UUUU", "UEC", "DNN", "SOUN", "BBAI", "CRSP", "RXRX",
-    "XPEV", "PLUG", "FCEL", "OPEN",
-    "DJT",
+    "XPEV", "PLUG", "FCEL", "OPEN", "DJT",
+    # United Kingdom
+    "SHEL.L", "AZN.L", "HSBA.L", "BP.L", "ULVR.L", "VOD.L", "GSK.L", "DGE.L",
+    "RIO.L", "BATS.L", "NG.L", "RR.L", "LLOY.L", "BARC.L", "AAL.L", "REL.L",
+    # Europe
+    "SAP.DE", "SIE.DE", "BMW.DE", "ALV.DE", "DTE.DE",
+    "AIR.PA", "TTE.PA", "SAN.PA", "OR.PA", "MC.PA",
+    "ASML.AS", "INGA.AS", "PHIA.AS", "ADYEN.AS",
+    "NESN.SW", "NOVN.SW", "ROG.SW",
+    "ENEL.MI", "ISP.MI", "UCG.MI",
+    "EQNR.OL", "ERIC-B.ST", "NOVO-B.CO", "NOKIA.HE",
+    # Japan
+    "7203.T", "6758.T", "9984.T", "6861.T", "8306.T", "6098.T", "8035.T", "4063.T",
+    # Hong Kong / China ADRs & local
+    "0700.HK", "9988.HK", "3690.HK", "1810.HK", "0941.HK", "1299.HK",
+    "BABA", "PDD", "JD",
+    # Canada / Australia
+    "RY.TO", "TD.TO", "ENB.TO", "SHOP.TO", "CNQ.TO",
+    "BHP.AX", "CBA.AX", "CSL.AX", "WBC.AX", "NAB.AX", "WES.AX",
+    # Korea / India / Brazil
+    "005930.KS", "000660.KS",
+    "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS",
+    "PETR4.SA", "VALE3.SA", "ITUB4.SA",
 ]
+
 
 DISCLAIMER = (
     "Screens from public numbers on a fixed watchlist. Not advice, not a forecast, "
@@ -450,12 +475,48 @@ def _load_row(ticker: str) -> dict[str, Any] | None:
     }
 
 
+def _market_label(snap: dict[str, Any]) -> str:
+    ticker = str(snap.get("ticker") or "")
+    exchange = str(snap.get("fullExchangeName") or snap.get("exchange") or "")
+    suffix_map = {
+        ".L": "London",
+        ".DE": "Germany",
+        ".F": "Frankfurt",
+        ".PA": "Paris",
+        ".AS": "Amsterdam",
+        ".SW": "Switzerland",
+        ".MI": "Milan",
+        ".ST": "Stockholm",
+        ".OL": "Oslo",
+        ".CO": "Copenhagen",
+        ".HE": "Helsinki",
+        ".T": "Tokyo",
+        ".HK": "Hong Kong",
+        ".TO": "Toronto",
+        ".AX": "Australia",
+        ".NS": "India NSE",
+        ".BO": "India BSE",
+        ".KS": "Korea",
+        ".SA": "Brazil",
+        ".SS": "Shanghai",
+        ".SZ": "Shenzhen",
+    }
+    for suf, label in suffix_map.items():
+        if ticker.endswith(suf):
+            return label
+    if exchange:
+        return exchange
+    return "US"
+
+
 def _row_card(row: dict[str, Any], score_key: str, why_key: str) -> dict[str, Any]:
     snap = row["snapshot"]
     return {
         "ticker": snap.get("ticker"),
         "name": snap.get("name"),
         "sector": snap.get("sector"),
+        "market": _market_label(snap),
+        "currency": snap.get("currency"),
         "price": snap.get("price"),
         "marketCap": snap.get("marketCap"),
         "score": row[score_key],
@@ -464,12 +525,12 @@ def _row_card(row: dict[str, Any], score_key: str, why_key: str) -> dict[str, An
 
 
 def run_screens(limit: int = 8) -> dict[str, Any]:
-    cached = cache.get("screens:v5", ttl_seconds=45 * 60)
+    cached = cache.get("screens:v6", ttl_seconds=45 * 60)
     if cached:
         return cached
 
     rows: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=12) as pool:
         futs = {pool.submit(_load_row, normalize_ticker(t)): t for t in UNIVERSE}
         for fut in as_completed(futs):
             item = fut.result()
@@ -550,5 +611,5 @@ def run_screens(limit: int = 8) -> dict[str, Any]:
         "bear": bear,
         "endorsement": endorsement,
     }
-    cache.put("screens:v5", payload)
+    cache.put("screens:v6", payload)
     return payload

@@ -137,23 +137,74 @@ def dollars_per_pound() -> float:
     return rate
 
 
+def _fx_pair_rate(pair: str) -> float | None:
+    cached = cache.get(f"fx:{pair}", ttl_seconds=60 * 60)
+    if cached is not None:
+        try:
+            return float(cached)
+        except (TypeError, ValueError):
+            return None
+    try:
+        stock = yfinance_ticker(pair)
+        info = stock.info or {}
+        raw = info.get("regularMarketPrice") or info.get("previousClose") or info.get("bid")
+        if raw is None:
+            return None
+        rate = float(raw)
+        if rate <= 0:
+            return None
+        cache.put(f"fx:{pair}", rate)
+        return rate
+    except Exception:
+        return None
+
+
+def currency_to_gbp(amount: float, currency: str | None) -> float:
+    """Turn a local market price into pounds (handles GBp pence and major FX)."""
+    raw = currency or "USD"
+    value = float(amount)
+    # Yahoo lists many London names in pence.
+    if raw in {"GBp", "GBX"} or raw == "ZAc" or raw == "ILA":
+        value /= 100.0
+        raw = "GBP" if raw in {"GBp", "GBX"} else ("ZAR" if raw == "ZAc" else "ILS")
+    cur = raw.upper()
+    if cur == "GBP":
+        return value
+    if cur == "USD":
+        return value / dollars_per_pound()
+    direct = _fx_pair_rate(f"{cur}GBP=X")
+    if direct:
+        return value * direct
+    inverse = _fx_pair_rate(f"GBP{cur}=X")
+    if inverse:
+        return value / inverse
+    # Last resort: via USD.
+    via_usd = _fx_pair_rate(f"{cur}USD=X")
+    if via_usd:
+        return (value * via_usd) / dollars_per_pound()
+    usd_via = _fx_pair_rate(f"USD{cur}=X")
+    if usd_via:
+        return (value / usd_via) / dollars_per_pound()
+    return value / dollars_per_pound()
+
+
 def usd_to_gbp(usd: float) -> float:
-    return float(usd) / dollars_per_pound()
+    return currency_to_gbp(usd, "USD")
 
 
-def _price_usd(ticker: str) -> tuple[float, str]:
+def _price_gbp(ticker: str) -> tuple[float, str, str]:
     snap = fetch_snapshot(ticker)
     price = snap.get("price") or snap.get("currentPrice") or snap.get("regularMarketPrice")
     if price is None:
         raise ValueError("No live price for this name.")
+    currency = str(snap.get("currency") or "USD")
     name = snap.get("name") or ticker
-    return float(price), str(name)
+    return currency_to_gbp(float(price), currency), str(name), currency
 
 
 def _mark(data: dict[str, Any]) -> dict[str, Any]:
-    fx = dollars_per_pound()
-    holdings_value = 0.0
     valued = []
+    holdings_value = 0.0
     for row in data.get("holdings") or []:
         ticker = row.get("ticker")
         shares = float(row.get("shares") or 0)
@@ -161,9 +212,9 @@ def _mark(data: dict[str, Any]) -> dict[str, Any]:
         name = row.get("name") or ticker
         now_gbp = None
         try:
-            usd, live_name = _price_usd(ticker)
+            px_gbp, live_name, _currency = _price_gbp(ticker)
             name = live_name or name
-            now_gbp = shares * (usd / fx)
+            now_gbp = shares * px_gbp
         except Exception:
             now_gbp = spent
         holdings_value += now_gbp
@@ -192,7 +243,7 @@ def _mark(data: dict[str, Any]) -> dict[str, Any]:
         "holdings": valued,
         "trades": trades[-12:][::-1],
         "last_autopilot": data.get("last_autopilot") or [],
-        "fx_usd_per_gbp": round(fx, 4),
+        "fx_usd_per_gbp": round(dollars_per_pound(), 4),
         "helper": {
             "started_gbp": round(starting, 2),
             "now_gbp": round(total, 2),
@@ -201,8 +252,8 @@ def _mark(data: dict[str, Any]) -> dict[str, Any]:
             "endorsement_n": sum(1 for h in valued if h.get("kind") == "endorsement"),
             "bear_n": sum(1 for h in valued if h.get("kind") == "bear"),
             "note": (
-                "Pretend helper scoreboard. It may use almost all fake cash after it has looked at a file. "
-                "A good few days here is not a reason to go live. This app cannot take real money."
+                "Pretend helper scoreboard across world markets (Yahoo tickers). "
+                "Prices are converted into pretend pounds. Not a real broker."
             ),
         },
     }
@@ -233,8 +284,7 @@ def buy(ticker: str, amount_gbp: float, kind: str | None = None, reason: str | N
     cash = float(data.get("cash_gbp") or 0)
     if amount > cash + 1e-9:
         raise ValueError(f"Only £{cash:.2f} pretend cash left.")
-    usd, name = _price_usd(symbol)
-    px_gbp = usd_to_gbp(usd)
+    px_gbp, name, _currency = _price_gbp(symbol)
     if px_gbp <= 0:
         raise ValueError("Could not turn the share price into pounds.")
     shares = amount / px_gbp
@@ -292,8 +342,8 @@ def sell(ticker: str, reason: str | None = None) -> dict[str, Any]:
     row = next((h for h in holdings if h.get("ticker") == symbol), None)
     if not row:
         raise ValueError("You do not hold that name in the pretend wallet.")
-    usd, name = _price_usd(symbol)
-    now_gbp = float(row.get("shares") or 0) * usd_to_gbp(usd)
+    px_gbp, name, _currency = _price_gbp(symbol)
+    now_gbp = float(row.get("shares") or 0) * px_gbp
     data["cash_gbp"] = float(data.get("cash_gbp") or 0) + now_gbp
     data["holdings"] = [h for h in holdings if h.get("ticker") != symbol]
     data.setdefault("trades", []).append(

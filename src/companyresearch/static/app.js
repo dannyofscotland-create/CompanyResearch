@@ -236,11 +236,12 @@ function fillBoard(id, items) {
       const why = escapeHtml((item.why || []).join(" · "));
       const name = escapeHtml(item.name || item.ticker);
       const ticker = escapeHtml(item.ticker);
+      const market = item.market ? escapeHtml(item.market) + " · " : "";
       return `<li><button type="button" class="pick" data-q="${escapeAttr(item.ticker)}">
         <span class="sym">${ticker}</span>
         <span class="nm">${name}</span>
         <span class="sc">${escapeHtml(String(item.score))}</span>
-        <span class="why">${why}</span>
+        <span class="why">${market}${why}</span>
       </button></li>`;
     })
     .join("");

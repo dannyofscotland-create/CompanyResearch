@@ -1,16 +1,30 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from companyresearch import cache
 from companyresearch.net import is_ssl_error, use_insecure_ssl, yfinance_ticker
 from companyresearch.sources.classify import classify_url, domain_of
 
-YF_TICKER_FIX = str.maketrans({".": "-"})
+# Yahoo international suffixes must keep the dot (VOD.L, 7203.T). US class shares use a dash (BRK-B).
+_EXCHANGE_SUFFIX = re.compile(
+    r"\.(L|IL|DE|F|PA|AS|BR|MI|MC|SW|ST|OL|CO|HE|LS|VI|AT|T|HK|TO|V|AX|NZ|"
+    r"NS|BO|SA|MX|KS|KQ|SS|SZ|TW|TWO|SI|JK|KL|SR|IS|TA|QA|AE|JO|CA)$",
+    re.I,
+)
+_US_CLASS = re.compile(r"^[A-Z]{1,5}\.[A-Z]$")
 
 
 def normalize_ticker(raw: str) -> str:
-    return raw.strip().upper().translate(YF_TICKER_FIX)
+    symbol = raw.strip().upper().replace(" ", "")
+    if not symbol:
+        return symbol
+    if _EXCHANGE_SUFFIX.search(symbol):
+        return symbol
+    if _US_CLASS.fullmatch(symbol):
+        return symbol.replace(".", "-")
+    return symbol.replace(".", "-")
 
 
 def _jsonish(value: Any) -> Any:
@@ -87,6 +101,9 @@ SNAPSHOT_KEYS = [
     "shortRatio",
     "shortPercentOfFloat",
     "beta",
+    "exchange",
+    "fullExchangeName",
+    "quoteType",
 ]
 
 
