@@ -438,6 +438,7 @@ def autopilot() -> dict[str, Any]:
     raw = load_wallet().get("holdings") or []
     held = {h.get("ticker") for h in raw if h.get("ticker")}
     if cash >= 15:
+        extra_deep = 0
         for ticker in _candidates(boards, held):
             if cash < 15:
                 break
@@ -445,13 +446,24 @@ def autopilot() -> dict[str, Any]:
                 break
             if str(ticker).upper() in sold_recent:
                 continue
+            if extra_deep >= 3:
+                break
             try:
-                file = assemble_file(ticker)
+                file = assemble_file(ticker, deep=True)
+                extra_deep += 1
                 file["recently_sold"] = str(ticker).upper() in sold_recent
                 move = heuristic_move(file, mode="buy")
             except Exception:
                 continue
             if move.get("action") != "buy":
+                if move.get("action") == "skip":
+                    log.append(
+                        {
+                            "action": "skip",
+                            "ticker": ticker,
+                            "why": move.get("why") or "Full research said skip.",
+                        }
+                    )
                 continue
             _try_buy(move)
             cash = float(snapshot().get("cash_gbp") or 0)

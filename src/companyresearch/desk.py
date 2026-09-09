@@ -16,14 +16,13 @@ from companyresearch.screens import (
 from companyresearch.sources.market import fetch_snapshot, normalize_ticker
 from companyresearch.sources.news import search_angle
 
-PLAN_SYS = """You run a pretend wallet in a free test. Research each name, then decide.
-Goal of the test: see if your choices make or lose fake money — not to churn.
-If after research you like a stock, BUY it. Size by conviction: large / medium / small.
+PLAN_SYS = """You run a pretend wallet in a free test.
+CRITICAL: only BUY if research_depth is "full" and the pre-buy dig is done. Never buy on a skim.
+If attack_level is confirmed or watch after full research, SKIP — do not buy and regret later.
+If after full research you like a stock, BUY it. Size by conviction: large / medium / small.
 Do NOT flip-flop. If hours_held is under 8, HOLD unless attack_level is confirmed with a named short report or going-concern.
-Do NOT sell just because you re-read headlines that were already around when you bought.
-SELL only for a real thesis break, confirmed attack, a serious loss after the hold period, or locking a large win after the hold period.
-Hold when nothing important changed.
-Skip a buy if the file is thin, attack_level is confirmed, or the name was sold recently (recently_sold).
+SELL only for a real thesis break, confirmed attack after the hold rules, a serious loss after the hold period, or locking a large win after the hold period.
+Skip a buy if the file is thin, not fully researched, attack_level is confirmed/watch, or recently_sold.
 Do NOT sell or skip because of Wikipedia, forums, video-game pages, or a headline that is not about this ticker.
 Return ONLY JSON:
 {"moves":[{"ticker":"X","action":"buy"|"sell"|"hold"|"skip","why":"plain words as if talking","size":"small"|"medium"|"large"}]}
@@ -60,9 +59,11 @@ def kind_of(snap: dict[str, Any]) -> str:
     return "mixed"
 
 
-def assemble_file(ticker: str) -> dict[str, Any]:
+def assemble_file(ticker: str, *, deep: bool = False) -> dict[str, Any]:
+    """Build a research file. deep=True = full pre-buy dig (must finish before any buy)."""
     symbol = normalize_ticker(ticker)
-    cached = cache.get(f"desk:v3:{symbol}", ttl_seconds=25 * 60)
+    cache_key = f"desk:v4:{'deep' if deep else 'lite'}:{symbol}"
+    cached = cache.get(cache_key, ttl_seconds=(50 if deep else 25) * 60)
     if cached:
         return cached
     snap = fetch_snapshot(symbol)
@@ -78,17 +79,45 @@ def assemble_file(ticker: str) -> dict[str, Any]:
         rows.extend(search_angle(f'"{symbol}" {name} earnings OR results OR guidance', "news", "latest results", 4))
         rows.extend(
             search_angle(
-                f'"{symbol}" {name} Hindenburg OR "short report" OR "going concern" OR dilution',
+                f'"{symbol}" {name} Hindenburg OR Kerrisdale OR "short report" OR "going concern" OR dilution OR fraud',
                 "text",
                 "is there an actual attack on this ticker",
-                5,
+                6,
             )
         )
+        if deep:
+            rows.extend(
+                search_angle(
+                    f'"{symbol}" {name} lawsuit OR investigation OR SEC OR "class action"',
+                    "news",
+                    "legal or regulator trouble",
+                    5,
+                )
+            )
+            rows.extend(
+                search_angle(
+                    f'"{symbol}" {name} bankruptcy OR "going concern" OR offering OR dilution OR "share sale"',
+                    "text",
+                    "cash and dilution risk",
+                    5,
+                )
+            )
+            rows.extend(
+                search_angle(
+                    f'"{symbol}" {name} why stock dropped OR selloff OR risks OR overvalued',
+                    "text",
+                    "bear case before buying",
+                    5,
+                )
+            )
     except Exception:
         rows = []
-    headlines = [str(r.get("title") or "") for r in rows if r.get("title")][:8]
+    headlines = [str(r.get("title") or "") for r in rows if r.get("title")][:10]
     attack = confirm_attack(symbol, name, rows)
-    attack = deepen_if_needed(symbol, name, rows, attack)
+    if deep:
+        attack = _prebuy_vet(symbol, name, rows, attack)
+    else:
+        attack = deepen_if_needed(symbol, name, rows, attack)
     payload = {
         "ticker": symbol,
         "name": name,
@@ -110,9 +139,66 @@ def assemble_file(ticker: str) -> dict[str, Any]:
         "ugly": attack.get("level") == "confirmed",
         "ignored_junk": attack.get("ignored") or [],
         "why_bits": (q_why or l_why or e_why or b_why)[:3],
+        "research_depth": "full" if deep else "lite",
+        "researched": True if deep else False,
     }
-    cache.put(f"desk:v3:{symbol}", payload)
+    cache.put(cache_key, payload)
     return payload
+
+
+def _prebuy_vet(ticker: str, name: str, sources: list[dict[str, Any]], attack: dict[str, Any]) -> dict[str, Any]:
+    """Open real pages before buying — do not buy on headlines alone."""
+    from companyresearch.sources.pages import fetch_snippet
+
+    attack = deepen_if_needed(ticker, name, sources, attack)
+    opened = 0
+    for item in sources:
+        if opened >= 4:
+            break
+        url = item.get("url") or ""
+        title = str(item.get("title") or "")
+        if not url or not title:
+            continue
+        blob = f"{title} {item.get('summary') or ''}"
+        if not any(
+            w in blob.lower()
+            for w in (
+                "short",
+                "lawsuit",
+                "fraud",
+                "concern",
+                "dilution",
+                "offering",
+                "investigation",
+                "bankrupt",
+                "halt",
+                "overvalued",
+                "risk",
+                "loss",
+                "miss",
+            )
+        ):
+            continue
+        snippet = fetch_snippet(url, max_chars=900)
+        if not snippet:
+            continue
+        opened += 1
+        item["excerpt"] = snippet[:400]
+        # Re-score with excerpts folded into titles for confirm_attack
+        enriched = []
+        for src in sources:
+            row = dict(src)
+            if src.get("excerpt"):
+                row["summary"] = f"{src.get('summary') or ''} {src['excerpt']}"
+            enriched.append(row)
+        attack = confirm_attack(ticker, name, enriched)
+        attack = deepen_if_needed(ticker, name, enriched, attack)
+    attack["prebuy_pages_opened"] = opened
+    attack["note"] = (
+        (attack.get("note") or "")
+        + f" Pre-buy dig opened {opened} page(s) before any pretend money moves."
+    ).strip()
+    return attack
 
 
 def jumpy_kind(kind: str) -> bool:
@@ -176,7 +262,7 @@ def heuristic_move(file: dict[str, Any], *, mode: str, pnl: float | None = None)
             "size": "all",
             "why": f"Looked at {ticker} again. Still want it on the file ({bits}). Holding pretend.",
         }
-    # buy
+    # buy — only after a full pre-buy dig
     if recently_sold:
         return {
             "ticker": ticker,
@@ -184,45 +270,54 @@ def heuristic_move(file: dict[str, Any], *, mode: str, pnl: float | None = None)
             "size": "small",
             "why": f"Sold {ticker} recently. Not buying it straight back — that was the flip-flop.",
         }
+    if file.get("research_depth") != "full":
+        return {
+            "ticker": ticker,
+            "action": "skip",
+            "size": "small",
+            "why": f"Have not finished full research on {ticker} yet. Will not buy on a skim.",
+        }
     if ugly:
         return {
             "ticker": ticker,
             "action": "skip",
             "size": "small",
-            "why": f"Looked at {ticker}. Confirmed trouble about this company, not a forum post. Not putting fake money in.",
+            "why": f"Full research on {ticker} found confirmed trouble. Not putting fake money in.",
         }
-    if file.get("attack_level") == "watch" and jumpy_kind(kind):
+    if file.get("attack_level") == "watch":
         return {
             "ticker": ticker,
             "action": "skip",
             "size": "small",
-            "why": f"Looked at {ticker}: already on a watch for ugly headlines. Not buying into that for the test.",
+            "why": f"Full research on {ticker} left an ugly watch flag. Skipping so we do not buy then regret.",
         }
     if quality < 38 and kind in {"mixed", "gamble"} and not jumpy_kind(kind):
         return {
             "ticker": ticker,
             "action": "skip",
             "size": "small",
-            "why": f"Looked at {ticker}. File is too thin or messy. Skipping.",
+            "why": f"Full research on {ticker}: file still too thin. Skipping.",
         }
+    pages = int((file.get("attack") or {}).get("prebuy_pages_opened") or 0)
+    dig = f" after opening {pages} page(s)" if pages else " after the full dig"
     if kind == "steadier" and quality >= 52:
         size = "large"
-        why = f"Looked at {ticker}: already makes money on the public numbers. Buying for the test."
+        why = f"Full research on {ticker}{dig}: already makes money on the public numbers. Buying for the test."
     elif jumpy_kind(kind):
         size = "medium" if quality >= 40 else "small"
         why = (
-            f"Looked at {ticker} ({kind}). Research file is interesting enough for a real pretend bet "
-            f"({bits}). Buying — and will hold it a while, not flip next pass."
+            f"Full research on {ticker} ({kind}){dig}. No confirmed/watch trouble left. "
+            f"File looks interesting ({bits}). Buying — and will hold it a while."
         )
     elif quality >= 45:
         size = "large" if quality >= 58 else "medium"
-        why = f"Looked at {ticker}: research looks ok ({bits}). Putting pretend money in."
+        why = f"Full research on {ticker}{dig}: looks ok ({bits}). Putting pretend money in."
     else:
         return {
             "ticker": ticker,
             "action": "skip",
             "size": "small",
-            "why": f"Looked at {ticker}. Not convinced after research. Skipping.",
+            "why": f"Full research on {ticker}: not convinced. Skipping.",
         }
     return {"ticker": ticker, "action": "buy", "size": size, "why": why}
 
@@ -258,19 +353,22 @@ def plan_pass(
         file["hours_held"] = held_hours.get(str(ticker).upper(), 999.0)
         files.append(file)
     seen = {f.get("ticker") for f in files}
+    deep_budget = 5
     for ticker in candidate_tickers:
         if ticker in seen:
             continue
+        if deep_budget <= 0:
+            break
         try:
-            file = assemble_file(ticker)
+            # Full dig before any buy decision — no skim-then-regret.
+            file = assemble_file(ticker, deep=True)
         except Exception:
             continue
+        deep_budget -= 1
         file["mode"] = "buy"
         file["recently_sold"] = str(ticker).upper() in sold
         files.append(file)
         seen.add(ticker)
-        if sum(1 for f in files if f.get("mode") == "buy") >= 10:
-            break
 
     planned = _llm_plan(files, cash, total)
     if planned:
@@ -317,6 +415,18 @@ def _calm_moves(moves: list[dict[str, Any]], files: list[dict[str, Any]]) -> lis
                         "Not flip-flopping on a second skim — holding."
                     ),
                 }
+        if action == "buy" and file.get("research_depth") != "full":
+            move = {
+                **move,
+                "action": "skip",
+                "why": f"Blocked buy of {ticker}: full research was not finished.",
+            }
+        if action == "buy" and file.get("attack_level") in {"confirmed", "watch"}:
+            move = {
+                **move,
+                "action": "skip",
+                "why": f"Full research flagged {ticker} ({file.get('attack_level')}). Not buying.",
+            }
         if action == "buy" and file.get("recently_sold"):
             move = {
                 **move,
@@ -340,6 +450,7 @@ def _llm_plan(files: list[dict[str, Any]], cash: float, total: float) -> list[di
                 "pnl": file.get("pnl"),
                 "hours_held": file.get("hours_held"),
                 "recently_sold": bool(file.get("recently_sold")),
+                "research_depth": file.get("research_depth") or "lite",
                 "headlines": (file.get("headlines") or [])[:5],
                 "attack_level": file.get("attack_level") or "clear",
                 "attack_hits": (file.get("attack") or {}).get("hits") or [],
@@ -351,7 +462,7 @@ def _llm_plan(files: list[dict[str, Any]], cash: float, total: float) -> list[di
     payload = {
         "cash_gbp": round(cash, 2),
         "total_gbp": round(total, 2),
-        "note": "Free test: buy what research likes, sell when you change your mind. Leave only crumbs idle.",
+        "note": "Only buy after research_depth=full. Skip watch/confirmed. Do not churn.",
         "desk": slim,
     }
     try:
