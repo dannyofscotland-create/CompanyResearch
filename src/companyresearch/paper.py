@@ -388,8 +388,8 @@ def _stake_amount(size: str, kind: str, cash: float, total: float, *, keep: floa
 
 
 def _candidates(boards: dict[str, Any], held: set[str]) -> list[str]:
-    # Growth/spec ideas alongside quality — how pros scan a desk.
-    order = ("speculative", "quality", "longshot", "bear", "endorsement")
+    # Quality/growth first so the deep-research budget is not wasted only on flyers.
+    order = ("quality", "speculative", "longshot", "bear", "endorsement")
     out: list[str] = []
     seen: set[str] = set(held)
     for key in order:
@@ -544,8 +544,8 @@ def autopilot() -> dict[str, Any]:
     if cash >= 15:
         extra_deep = 0
         quality_first = (
-            list(boards.get("speculative") or [])
-            + list(boards.get("quality") or [])
+            list(boards.get("quality") or [])
+            + list(boards.get("speculative") or [])
             + list(boards.get("longshot") or [])
         )
         tickers = []

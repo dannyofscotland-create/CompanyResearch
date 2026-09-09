@@ -421,7 +421,7 @@ def plan_pass(
         file["hours_held"] = held_hours.get(str(ticker).upper(), 999.0)
         files.append(file)
     seen = {f.get("ticker") for f in files}
-    deep_budget = 6
+    deep_budget = 8
     for ticker in candidate_tickers:
         if ticker in seen:
             continue
