@@ -18,9 +18,9 @@ from companyresearch.sources.news import search_angle
 
 PLAN_SYS = """You run a pretend wallet like a professional investor with a months-to-couple-years horizon — not a 10-year pension autopilot, and not a meme lottery.
 CRITICAL: only BUY if research_depth is "full".
-Pros buy: (1) quality growth — real businesses with profits and/or rising revenue, (2) a researched opportunity sleeve when the file is strong.
-Pros avoid: endorsement/meme pumps, buying on a skim, ignoring confirmed short reports.
-Allocation vibe: most of the pile in quality/growth, up to about 40% in higher-upside researched names (longshot/bear/gamble) if the dig clears.
+Put about 60% in quality growth. Keep ~35–40% for a researched higher-upside sleeve (spec/longshot/bear) when the dig clears.
+Do NOT fill the whole wallet with only defensive cash-cows (KO-only books). Pros run a core + opportunity book.
+Skip endorsement/meme pumps.
 SELL when the thesis breaks, confirmed attack, a real loss after the hold period, or bank a solid gain (~20%+) — do not sit forever on a flat defensive name if better researched growth exists.
 Do NOT flip under ~4 hours held unless attack_level is confirmed.
 Skip recently_sold. Skip endorsement lotteries.
@@ -33,8 +33,9 @@ This is pretend. Never tell anyone to hand over real cash.
 MIN_HOLD_HOURS = 4.0
 CONFIRMED_HOLD_HOURS = 1.5
 REBUY_COOLDOWN_HOURS = 18.0
-# Higher-upside sleeve (researched) — pros take measured risk for return.
+# Book mix: leave room for researched upside — do not fill 100% with KO/Visa.
 RISK_MAX_FRAC = 0.40
+CORE_RESERVE_FOR_UPSIDE = 0.35
 
 
 
@@ -65,7 +66,7 @@ def kind_of(snap: dict[str, Any]) -> str:
 def assemble_file(ticker: str, *, deep: bool = False) -> dict[str, Any]:
     """Build a research file. deep=True = full pre-buy dig (must finish before any buy)."""
     symbol = normalize_ticker(ticker)
-    cache_key = f"desk:v6:{'deep' if deep else 'lite'}:{symbol}"
+    cache_key = f"desk:v7:{'deep' if deep else 'lite'}:{symbol}"
     cached = cache.get(cache_key, ttl_seconds=(50 if deep else 25) * 60)
     if cached:
         return cached
@@ -348,26 +349,26 @@ def heuristic_move(file: dict[str, Any], *, mode: str, pnl: float | None = None)
         }
     pages = int((file.get("attack") or {}).get("prebuy_pages_opened") or 0)
     dig = f" after opening {pages} page(s)" if pages else " after full dig"
-    # Core: quality growth (pro bread and butter).
+    # Core: quality growth (pro bread and butter) — but leave room for upside sleeve.
     if (kind == "steadier" or not jumpy_kind(kind)) and (growth or quality >= 56):
-        size = "large" if (growth and quality >= 54) or quality >= 60 else "medium"
-        label = "quality growth" if growth else "quality"
+        size = "large" if growth and quality >= 56 else "medium"
+        label = "quality growth" if growth else "quality core"
         return {
             "ticker": ticker,
             "action": "buy",
             "size": size,
-            "why": f"Pro-style {label} buy on {ticker}{dig} ({bits}).",
+            "why": f"Pro-style {label} buy on {ticker}{dig} ({bits}). Leaving room for an upside sleeve.",
         }
     # Opportunity sleeve: researched upside with a bar.
-    if jumpy_kind(kind) and quality >= 46 and risk_ok:
-        size = "medium" if quality >= 52 or growth else "small"
+    if jumpy_kind(kind) and quality >= 42 and risk_ok:
+        size = "medium" if quality >= 50 or growth else "small"
         return {
             "ticker": ticker,
             "action": "buy",
             "size": size,
             "why": (
-                f"Researched opportunity sleeve: {ticker} ({kind}){dig}. "
-                f"Sized for upside, not the whole pile. ({bits})"
+                f"Upside sleeve: {ticker} ({kind}){dig}. "
+                f"Researched opportunity — not the whole pile. ({bits})"
             ),
         }
     if quality >= 50 and file.get("attack_level") != "watch":

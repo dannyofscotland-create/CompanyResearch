@@ -10,14 +10,20 @@ from companyresearch.sources.news import search_angle
 from companyresearch.sources.pages import fetch_snippet
 
 # Named attacks / official trouble — these can matter.
+# Firm names alone are not enough (e.g. "Kerrisdale cuts holdings" is not a short report).
 HARD = re.compile(
-    r"hindenburg|muddy waters|spruce point|citron research|wolfpack|kerrisdale|"
-    r"going concern|sec charges|trading halt|\bhalted\b|accounting fraud|"
-    r"atm offering|share offering",
+    r"(hindenburg|muddy waters|spruce point|citron research|wolfpack|kerrisdale).{0,70}"
+    r"(report|short|fraud|accuse|target|initiate)|"
+    r"(report|short|fraud|accuse).{0,70}"
+    r"(hindenburg|muddy waters|spruce point|citron research|wolfpack|kerrisdale)|"
+    r"going concern|sec charges|trading halt|\bhalted\b|accounting fraud",
     re.I,
 )
-# Scary words that also appear in Wikipedia, games, and old lawsuits.
-SOFT = re.compile(r"pump and dump|class action|short report|going to zero|dilution", re.I)
+# Scary words that also appear in routine news and filings.
+SOFT = re.compile(
+    r"pump and dump|class action|short report|going to zero|dilution|atm offering|share offering",
+    re.I,
+)
 ENDORSE = re.compile(
     r"\btrump\b|truth social|endorsement|endorsed by|celebrity pump|meme stock|"
     r"going to the moon|to the moon|100x",

@@ -7,6 +7,7 @@ from typing import Any
 from companyresearch import cache
 from companyresearch.config import settings
 from companyresearch.desk import (
+    CORE_RESERVE_FOR_UPSIDE,
     REBUY_COOLDOWN_HOURS,
     RISK_MAX_FRAC,
     assemble_file,
@@ -388,17 +389,28 @@ def _stake_amount(size: str, kind: str, cash: float, total: float, *, keep: floa
 
 
 def _candidates(boards: dict[str, Any], held: set[str]) -> list[str]:
-    # Quality/growth first so the deep-research budget is not wasted only on flyers.
-    order = ("quality", "speculative", "longshot", "bear", "endorsement")
-    out: list[str] = []
+    """Interleave quality core with upside names so both get researched."""
+    quality: list[str] = []
+    upside: list[str] = []
     seen: set[str] = set(held)
-    for key in order:
+    for key, bucket in (
+        ("quality", quality),
+        ("speculative", upside),
+        ("longshot", upside),
+        ("bear", upside),
+    ):
         for item in boards.get(key) or []:
             ticker = item.get("ticker")
             if not ticker or ticker in seen:
                 continue
             seen.add(ticker)
-            out.append(ticker)
+            bucket.append(ticker)
+    out: list[str] = []
+    for i in range(max(len(quality), len(upside))):
+        if i < len(quality) and i < 5:
+            out.append(quality[i])
+        if i < len(upside) and i < 5:
+            out.append(upside[i])
     return out
 
 
@@ -501,16 +513,30 @@ def autopilot() -> dict[str, Any]:
                 {
                     "action": "skip",
                     "ticker": ticker,
-                    "why": f"Flyer pocket already ~{100 * RISK_MAX_FRAC:.0f}% of the pile. Keeping cash for steadier names.",
+                    "why": f"Upside sleeve already ~{100 * RISK_MAX_FRAC:.0f}% of the pile. Skipping {ticker}.",
                 }
             )
             return
-        amount = _stake_amount(str(move.get("size") or "medium"), kind, cash, total, keep=0.0)
+        # Do not let core names spend the cash reserved for the upside sleeve.
+        keep = 0.0
+        if not jumpy_kind(kind) and risk_now < total * 0.12:
+            keep = total * CORE_RESERVE_FOR_UPSIDE
+        amount = _stake_amount(str(move.get("size") or "medium"), kind, cash, total, keep=keep)
         if jumpy_kind(kind):
             room = max(0.0, total * RISK_MAX_FRAC - risk_now)
             amount = min(amount, room)
         if amount < 10:
-            log.append({"action": "skip", "ticker": ticker, "why": f"Liked {ticker} but not enough pretend cash left to size a bet."})
+            log.append(
+                {
+                    "action": "skip",
+                    "ticker": ticker,
+                    "why": (
+                        f"Liked {ticker} but cash is reserved for the upside sleeve."
+                        if keep > 0
+                        else f"Liked {ticker} but not enough pretend cash left to size a bet."
+                    ),
+                }
+            )
             return
         try:
             buy(ticker, amount, kind=kind, reason=why)
@@ -522,7 +548,7 @@ def autopilot() -> dict[str, Any]:
         except ValueError as exc:
             log.append({"action": "skip", "ticker": ticker, "why": str(exc)})
 
-    # Steadier buys first, then any tiny flyer buys.
+    # Upside sleeve first while reserved cash exists, then core — avoids an all-safe book.
     def _kind_of_move(move: dict[str, Any]) -> str:
         try:
             k, _ = classify_ticker(move.get("ticker") or "")
@@ -532,25 +558,41 @@ def autopilot() -> dict[str, Any]:
 
     steady_buys = [m for m in buy_moves if not jumpy_kind(_kind_of_move(m))]
     flyer_buys = [m for m in buy_moves if jumpy_kind(_kind_of_move(m))]
-    for move in steady_buys + flyer_buys:
+    for move in flyer_buys + steady_buys:
         _try_buy(move)
 
-    # Redeploy idle cash into researched steadier / quality names.
+    # Redeploy: hunt upside if sleeve is light, otherwise top up core.
     marked = snapshot()
     cash = float(marked.get("cash_gbp") or 0)
     total = float(marked.get("total_gbp") or STARTING_GBP)
     raw = load_wallet().get("holdings") or []
     held = {h.get("ticker") for h in raw if h.get("ticker")}
+    now_of = {h.get("ticker"): float(h.get("now_gbp") or 0) for h in marked.get("holdings") or []}
     if cash >= 15:
         extra_deep = 0
-        quality_first = (
-            list(boards.get("quality") or [])
+        risk_now = _risk_gbp(
+            [
+                {
+                    "kind": r.get("kind"),
+                    "now_gbp": now_of.get(r.get("ticker"), float(r.get("spent_gbp") or 0)),
+                }
+                for r in raw
+            ]
+        )
+        need_upside = risk_now < total * 0.18
+        shop = (
+            list(boards.get("speculative") or [])
+            + list(boards.get("longshot") or [])
+            + list(boards.get("bear") or [])
+            + list(boards.get("quality") or [])
+            if need_upside
+            else list(boards.get("quality") or [])
             + list(boards.get("speculative") or [])
             + list(boards.get("longshot") or [])
         )
-        tickers = []
+        tickers: list[str] = []
         seen = set(held)
-        for item in quality_first:
+        for item in shop:
             t = item.get("ticker")
             if t and t not in seen:
                 seen.add(t)
@@ -562,15 +604,18 @@ def autopilot() -> dict[str, Any]:
                 break
             if str(ticker).upper() in sold_recent:
                 continue
-            if extra_deep >= 5:
+            if extra_deep >= 6:
                 break
             try:
                 file = assemble_file(ticker, deep=True)
                 extra_deep += 1
                 file["recently_sold"] = str(ticker).upper() in sold_recent
-                file["risk_room"] = _risk_gbp(
-                    [{"kind": r.get("kind"), "now_gbp": now_of.get(r.get("ticker"), 0)} for r in raw]
-                ) < total * RISK_MAX_FRAC
+                file["risk_room"] = (
+                    _risk_gbp(
+                        [{"kind": r.get("kind"), "now_gbp": now_of.get(r.get("ticker"), 0)} for r in raw]
+                    )
+                    < total * RISK_MAX_FRAC
+                )
                 move = heuristic_move(file, mode="buy")
             except Exception:
                 continue
@@ -584,25 +629,61 @@ def autopilot() -> dict[str, Any]:
                         }
                     )
                 continue
-            # Opportunity sleeve allowed when risk room exists; still skip pure endorsement via heuristic.
             try:
                 kind, _ = classify_ticker(ticker)
             except Exception:
                 kind = "mixed"
             if kind == "endorsement":
                 continue
+            if need_upside and not jumpy_kind(kind):
+                continue
             _try_buy(move)
             cash = float(snapshot().get("cash_gbp") or 0)
             raw = load_wallet().get("holdings") or []
             held = {h.get("ticker") for h in raw if h.get("ticker")}
             now_of = {h.get("ticker"): float(h.get("now_gbp") or 0) for h in snapshot().get("holdings") or []}
+            risk_now = _risk_gbp(
+                [
+                    {
+                        "kind": r.get("kind"),
+                        "now_gbp": now_of.get(r.get("ticker"), float(r.get("spent_gbp") or 0)),
+                    }
+                    for r in raw
+                ]
+            )
+            need_upside = risk_now < total * 0.18
 
-    if cash >= 10:
+    marked = snapshot()
+    cash = float(marked.get("cash_gbp") or 0)
+    total = float(marked.get("total_gbp") or STARTING_GBP)
+    raw = load_wallet().get("holdings") or []
+    now_of = {h.get("ticker"): float(h.get("now_gbp") or 0) for h in marked.get("holdings") or []}
+    risk_now = _risk_gbp(
+        [
+            {
+                "kind": r.get("kind"),
+                "now_gbp": now_of.get(r.get("ticker"), float(r.get("spent_gbp") or 0)),
+            }
+            for r in raw
+        ]
+    )
+    if cash >= 20 and risk_now < total * 0.12:
         log.append(
             {
                 "action": "wait",
                 "ticker": "",
-                "why": f"Still £{cash:.0f} pretend cash idle — waiting for a pro-quality researched idea.",
+                "why": (
+                    f"Holding £{cash:.0f} for the upside sleeve — core is funded; "
+                    "waiting on a researched higher-upside name that clears the bar."
+                ),
+            }
+        )
+    elif cash >= 10:
+        log.append(
+            {
+                "action": "wait",
+                "ticker": "",
+                "why": f"Still £{cash:.0f} pretend cash idle — waiting for a researched idea.",
             }
         )
 
