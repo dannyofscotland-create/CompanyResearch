@@ -6,7 +6,13 @@ from typing import Any
 
 from companyresearch import cache
 from companyresearch.config import settings
-from companyresearch.desk import assemble_file, heuristic_move, kind_of, plan_pass
+from companyresearch.desk import (
+    REBUY_COOLDOWN_HOURS,
+    assemble_file,
+    heuristic_move,
+    kind_of,
+    plan_pass,
+)
 from companyresearch.net import yfinance_ticker
 from companyresearch.screens import run_screens
 from companyresearch.sources.market import fetch_snapshot, normalize_ticker
@@ -23,6 +29,58 @@ NOTE = (
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _parse_when(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M UTC", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            if fmt.endswith("Z"):
+                return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+            if "%z" in fmt:
+                return datetime.strptime(text.replace("Z", "+0000"), fmt.replace("%z", "%z"))
+            return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _hours_ago(when: Any) -> float | None:
+    dt = _parse_when(when)
+    if not dt:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0)
+
+
+def _hours_held_map(data: dict[str, Any]) -> dict[str, float]:
+    trades = data.get("trades") or []
+    out: dict[str, float] = {}
+    for row in data.get("holdings") or []:
+        ticker = str(row.get("ticker") or "").upper()
+        if not ticker:
+            continue
+        hours = _hours_ago(row.get("bought_at"))
+        if hours is None:
+            for trade in reversed(trades):
+                if trade.get("action") == "buy" and str(trade.get("ticker") or "").upper() == ticker:
+                    hours = _hours_ago(trade.get("when"))
+                    break
+        out[ticker] = float(hours if hours is not None else 999.0)
+    return out
+
+
+def _recently_sold_set(data: dict[str, Any], *, within_hours: float = REBUY_COOLDOWN_HOURS) -> set[str]:
+    sold: set[str] = set()
+    for trade in reversed(data.get("trades") or []):
+        if trade.get("action") != "sell":
+            continue
+        ticker = str(trade.get("ticker") or "").upper()
+        hours = _hours_ago(trade.get("when"))
+        if ticker and hours is not None and hours <= within_hours:
+            sold.add(ticker)
+    return sold
 
 
 def _empty() -> dict[str, Any]:
@@ -196,6 +254,7 @@ def buy(ticker: str, amount_gbp: float, kind: str | None = None, reason: str | N
         found["spent_gbp"] = float(found.get("spent_gbp") or 0) + amount
         found["name"] = name
         found["kind"] = kind
+        found["bought_at"] = _now()
         if reason:
             found["thesis"] = reason
     else:
@@ -207,6 +266,7 @@ def buy(ticker: str, amount_gbp: float, kind: str | None = None, reason: str | N
                 "spent_gbp": amount,
                 "kind": kind,
                 "thesis": reason or "",
+                "bought_at": _now(),
             }
         )
     data["holdings"] = holdings
@@ -288,12 +348,22 @@ def autopilot() -> dict[str, Any]:
     """Research, then freely buy/sell pretend money for the test. Never real accounts."""
     log: list[dict[str, Any]] = []
     marked = snapshot()
+    wallet = load_wallet()
     boards = run_screens()
     held_rows = marked.get("holdings") or []
     held = {h.get("ticker") for h in held_rows if h.get("ticker")}
     cash = float(marked.get("cash_gbp") or 0)
     total = float(marked.get("total_gbp") or STARTING_GBP)
-    moves = plan_pass(held_rows, _candidates(boards, held), cash, total)
+    sold_recent = _recently_sold_set(wallet)
+    hours_held = _hours_held_map(wallet)
+    moves = plan_pass(
+        held_rows,
+        _candidates(boards, held),
+        cash,
+        total,
+        recently_sold=sold_recent,
+        hours_held_of=hours_held,
+    )
 
     for move in moves:
         if move.get("action") != "sell":
@@ -303,6 +373,8 @@ def autopilot() -> dict[str, Any]:
         try:
             sell(ticker, reason=why)
             log.append({"action": "sell", "ticker": ticker, "why": why})
+            if ticker:
+                sold_recent.add(str(ticker).upper())
         except ValueError:
             continue
 
@@ -323,6 +395,15 @@ def autopilot() -> dict[str, Any]:
         ticker = move.get("ticker")
         why = move.get("why") or ""
         if not ticker:
+            return
+        if str(ticker).upper() in sold_recent:
+            log.append(
+                {
+                    "action": "skip",
+                    "ticker": ticker,
+                    "why": f"Sold {ticker} recently. Not buying it straight back — that was the flip-flop.",
+                }
+            )
             return
         if cash < 10:
             log.append({"action": "skip", "ticker": ticker, "why": "Wanted to buy but pretend cash is gone this pass."})
@@ -362,8 +443,11 @@ def autopilot() -> dict[str, Any]:
                 break
             if ticker not in held and len(held) >= MAX_HOLDINGS:
                 break
+            if str(ticker).upper() in sold_recent:
+                continue
             try:
                 file = assemble_file(ticker)
+                file["recently_sold"] = str(ticker).upper() in sold_recent
                 move = heuristic_move(file, mode="buy")
             except Exception:
                 continue

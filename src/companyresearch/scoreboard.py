@@ -53,7 +53,7 @@ def _html(data: dict[str, Any]) -> str:
         for item in log[:12]
     ]
     profit = float(data.get("profit_gbp") or 0)
-    profit_s = ("+" if profit >= 0 else "") + _money(abs(profit))
+    profit_s = ("+" if profit > 0 else "−" if profit < 0 else "") + _money(abs(profit))
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
