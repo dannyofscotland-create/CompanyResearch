@@ -360,8 +360,8 @@ def heuristic_move(file: dict[str, Any], *, mode: str, pnl: float | None = None)
             "why": f"Pro-style {label} buy on {ticker}{dig} ({bits}). Leaving room for an upside sleeve.",
         }
     # Opportunity sleeve: researched upside with a bar.
-    if jumpy_kind(kind) and quality >= 42 and risk_ok:
-        size = "medium" if quality >= 50 or growth else "small"
+    if jumpy_kind(kind) and quality >= 38 and risk_ok and file.get("attack_level") != "confirmed":
+        size = "medium" if quality >= 48 or growth else "small"
         return {
             "ticker": ticker,
             "action": "buy",
@@ -370,6 +370,14 @@ def heuristic_move(file: dict[str, Any], *, mode: str, pnl: float | None = None)
                 f"Upside sleeve: {ticker} ({kind}){dig}. "
                 f"Researched opportunity — not the whole pile. ({bits})"
             ),
+        }
+    # High-growth names often land as mixed/gamble — still fine for the sleeve.
+    if growth and quality >= 44 and risk_ok and file.get("attack_level") != "confirmed":
+        return {
+            "ticker": ticker,
+            "action": "buy",
+            "size": "medium",
+            "why": f"Upside sleeve growth bet on {ticker}{dig} ({bits}).",
         }
     if quality >= 50 and file.get("attack_level") != "watch":
         return {

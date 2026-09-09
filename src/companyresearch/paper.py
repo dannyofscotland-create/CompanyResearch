@@ -388,11 +388,31 @@ def _stake_amount(size: str, kind: str, cash: float, total: float, *, keep: floa
     return round(want, 2)
 
 
+UPSIDE_FALLBACK = [
+    "PLTR",
+    "CRWD",
+    "SNOW",
+    "AMD",
+    "NET",
+    "SHOP",
+    "UBER",
+    "ARM",
+    "AVGO",
+    "TSLA",
+    "COIN",
+    "HOOD",
+]
+
+
 def _candidates(boards: dict[str, Any], held: set[str]) -> list[str]:
     """Interleave quality core with upside names so both get researched."""
     quality: list[str] = []
     upside: list[str] = []
     seen: set[str] = set(held)
+    for ticker in UPSIDE_FALLBACK:
+        if ticker not in seen:
+            seen.add(ticker)
+            upside.append(ticker)
     for key, bucket in (
         ("quality", quality),
         ("speculative", upside),
@@ -407,19 +427,21 @@ def _candidates(boards: dict[str, Any], held: set[str]) -> list[str]:
             bucket.append(ticker)
     out: list[str] = []
     for i in range(max(len(quality), len(upside))):
-        if i < len(quality) and i < 5:
+        if i < len(quality) and i < 4:
             out.append(quality[i])
-        if i < len(upside) and i < 5:
+        if i < len(upside) and i < 6:
             out.append(upside[i])
     return out
 
 
-def _risk_gbp(holdings: list[dict[str, Any]]) -> float:
-    return sum(
-        float(h.get("now_gbp") or h.get("spent_gbp") or 0)
-        for h in holdings
-        if jumpy_kind(str(h.get("kind") or ""))
-    )
+def _sleeve_gbp(holdings: list[dict[str, Any]]) -> float:
+    total = 0.0
+    for h in holdings:
+        ticker = str(h.get("ticker") or "")
+        kind = str(h.get("kind") or "")
+        if jumpy_kind(kind) or ticker in UPSIDE_FALLBACK:
+            total += float(h.get("now_gbp") or h.get("spent_gbp") or 0)
+    return total
 
 
 def autopilot() -> dict[str, Any]:
@@ -498,7 +520,7 @@ def autopilot() -> dict[str, Any]:
             kind, _ = classify_ticker(ticker)
         except Exception:
             kind = "mixed"
-        risk_now = _risk_gbp(
+        risk_now = _sleeve_gbp(
             [
                 {
                     "ticker": t,
@@ -508,7 +530,8 @@ def autopilot() -> dict[str, Any]:
                 for t in held
             ]
         )
-        if jumpy_kind(kind) and risk_now >= total * RISK_MAX_FRAC:
+        is_sleeve = jumpy_kind(kind) or ticker in UPSIDE_FALLBACK
+        if is_sleeve and risk_now >= total * RISK_MAX_FRAC:
             log.append(
                 {
                     "action": "skip",
@@ -517,12 +540,12 @@ def autopilot() -> dict[str, Any]:
                 }
             )
             return
-        # Do not let core names spend the cash reserved for the upside sleeve.
+        # Core names must leave cash for the upside sleeve until it has a real stake.
         keep = 0.0
-        if not jumpy_kind(kind) and risk_now < total * 0.12:
+        if not is_sleeve and risk_now < total * 0.12:
             keep = total * CORE_RESERVE_FOR_UPSIDE
         amount = _stake_amount(str(move.get("size") or "medium"), kind, cash, total, keep=keep)
-        if jumpy_kind(kind):
+        if is_sleeve:
             room = max(0.0, total * RISK_MAX_FRAC - risk_now)
             amount = min(amount, room)
         if amount < 10:
@@ -570,7 +593,7 @@ def autopilot() -> dict[str, Any]:
     now_of = {h.get("ticker"): float(h.get("now_gbp") or 0) for h in marked.get("holdings") or []}
     if cash >= 15:
         extra_deep = 0
-        risk_now = _risk_gbp(
+        risk_now = _sleeve_gbp(
             [
                 {
                     "kind": r.get("kind"),
@@ -581,14 +604,15 @@ def autopilot() -> dict[str, Any]:
         )
         need_upside = risk_now < total * 0.18
         shop = (
-            list(boards.get("speculative") or [])
+            [{"ticker": t} for t in UPSIDE_FALLBACK]
+            + list(boards.get("speculative") or [])
             + list(boards.get("longshot") or [])
             + list(boards.get("bear") or [])
             + list(boards.get("quality") or [])
             if need_upside
             else list(boards.get("quality") or [])
             + list(boards.get("speculative") or [])
-            + list(boards.get("longshot") or [])
+            + [{"ticker": t} for t in UPSIDE_FALLBACK]
         )
         tickers: list[str] = []
         seen = set(held)
@@ -611,7 +635,7 @@ def autopilot() -> dict[str, Any]:
                 extra_deep += 1
                 file["recently_sold"] = str(ticker).upper() in sold_recent
                 file["risk_room"] = (
-                    _risk_gbp(
+                    _sleeve_gbp(
                         [{"kind": r.get("kind"), "now_gbp": now_of.get(r.get("ticker"), 0)} for r in raw]
                     )
                     < total * RISK_MAX_FRAC
@@ -635,14 +659,17 @@ def autopilot() -> dict[str, Any]:
                 kind = "mixed"
             if kind == "endorsement":
                 continue
-            if need_upside and not jumpy_kind(kind):
+            if need_upside and not jumpy_kind(kind) and ticker not in UPSIDE_FALLBACK:
                 continue
+            # Treat growth fallbacks as sleeve fills even if scored steadier.
+            if need_upside and ticker in UPSIDE_FALLBACK and not jumpy_kind(kind):
+                move = {**move, "size": move.get("size") or "medium"}
             _try_buy(move)
             cash = float(snapshot().get("cash_gbp") or 0)
             raw = load_wallet().get("holdings") or []
             held = {h.get("ticker") for h in raw if h.get("ticker")}
             now_of = {h.get("ticker"): float(h.get("now_gbp") or 0) for h in snapshot().get("holdings") or []}
-            risk_now = _risk_gbp(
+            risk_now = _sleeve_gbp(
                 [
                     {
                         "kind": r.get("kind"),
@@ -658,7 +685,7 @@ def autopilot() -> dict[str, Any]:
     total = float(marked.get("total_gbp") or STARTING_GBP)
     raw = load_wallet().get("holdings") or []
     now_of = {h.get("ticker"): float(h.get("now_gbp") or 0) for h in marked.get("holdings") or []}
-    risk_now = _risk_gbp(
+    risk_now = _sleeve_gbp(
         [
             {
                 "kind": r.get("kind"),
