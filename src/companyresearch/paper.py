@@ -21,9 +21,10 @@ from companyresearch.screens import run_screens
 from companyresearch.sources.market import fetch_snapshot, normalize_ticker
 
 WALLET_PATH = settings.data_dir / "paper_wallet.json"
-STARTING_GBP = 500.0
-MIN_CASH = 2.0
-MAX_HOLDINGS = 12
+STARTING_GBP = 50.0
+MIN_BUY = 5.0
+MIN_CASH = 1.0
+MAX_HOLDINGS = 5
 NOTE = (
     "Pretend money on this PC only. This app cannot see or touch pensions, "
     "banks, brokers, or any real account. A few days of fake pounds is not going live."
@@ -365,23 +366,23 @@ def sell(ticker: str, reason: str | None = None) -> dict[str, Any]:
 
 def _stake_amount(size: str, kind: str, cash: float, total: float, *, keep: float = 0.0) -> float:
     """Pro-style sizing: meaningful core stakes, measured opportunity sleeve."""
-    if cash < 10:
+    if cash < MIN_BUY:
         return 0.0
     spendable = max(0.0, cash - max(0.0, keep))
-    if spendable < 10:
+    if spendable < MIN_BUY:
         return 0.0
     jumpy = jumpy_kind(kind)
     if jumpy:
         if size == "medium":
-            want = min(max(10.0, total * 0.14), 70.0, spendable)
+            want = min(max(MIN_BUY, total * 0.14), spendable)
         else:
-            want = min(max(10.0, total * 0.10), 50.0, spendable)
+            want = min(max(MIN_BUY, total * 0.10), spendable)
     elif size == "small":
-        want = min(max(10.0, total * 0.12), spendable)
+        want = min(max(MIN_BUY, total * 0.12), spendable)
     elif size == "large":
-        want = min(max(10.0, total * 0.28), spendable)
+        want = min(max(MIN_BUY, total * 0.28), spendable)
     else:
-        want = min(max(10.0, total * 0.18), spendable)
+        want = min(max(MIN_BUY, total * 0.18), spendable)
     leftover = cash - want
     if leftover < MIN_CASH and leftover >= 0 and not jumpy:
         want = cash
@@ -510,7 +511,7 @@ def autopilot() -> dict[str, Any]:
                 }
             )
             return
-        if cash < 10:
+        if cash < MIN_BUY:
             log.append({"action": "skip", "ticker": ticker, "why": "Wanted to buy but pretend cash is gone this pass."})
             return
         if ticker not in held and len(held) >= MAX_HOLDINGS:
@@ -548,7 +549,7 @@ def autopilot() -> dict[str, Any]:
         if is_sleeve:
             room = max(0.0, total * RISK_MAX_FRAC - risk_now)
             amount = min(amount, room)
-        if amount < 10:
+        if amount < MIN_BUY:
             log.append(
                 {
                     "action": "skip",
@@ -591,7 +592,7 @@ def autopilot() -> dict[str, Any]:
     raw = load_wallet().get("holdings") or []
     held = {h.get("ticker") for h in raw if h.get("ticker")}
     now_of = {h.get("ticker"): float(h.get("now_gbp") or 0) for h in marked.get("holdings") or []}
-    if cash >= 15:
+    if cash >= MIN_BUY * 1.5:
         extra_deep = 0
         risk_now = _sleeve_gbp(
             [
@@ -622,7 +623,7 @@ def autopilot() -> dict[str, Any]:
                 seen.add(t)
                 tickers.append(t)
         for ticker in tickers:
-            if cash < 15:
+            if cash < MIN_BUY * 1.5:
                 break
             if ticker not in held and len(held) >= MAX_HOLDINGS:
                 break
@@ -694,7 +695,7 @@ def autopilot() -> dict[str, Any]:
             for r in raw
         ]
     )
-    if cash >= 20 and risk_now < total * 0.12:
+    if cash >= MIN_BUY * 2 and risk_now < total * 0.12:
         log.append(
             {
                 "action": "wait",
@@ -705,7 +706,7 @@ def autopilot() -> dict[str, Any]:
                 ),
             }
         )
-    elif cash >= 10:
+    elif cash >= MIN_BUY:
         log.append(
             {
                 "action": "wait",
